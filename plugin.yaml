@@ -1,0 +1,25 @@
+manifest_version: 1
+name: hermes-my-browser-extension
+version: 0.2.0
+description: >
+  Browser extension plugin for Hermes Agent. The agent operates in a
+  dedicated background Chrome window via stock chrome.* APIs — no
+  debugger banner, no focus stealing, doesn't disturb the user's tabs.
+author: "MOSS"
+kind: standalone
+provides_tools:
+  - my_browser_connect
+  - my_browser_disconnect
+  - my_browser_status
+  - my_browser_navigate
+  - my_browser_screenshot
+  - my_browser_eval
+  - my_browser_click
+  - my_browser_type
+  - my_browser_get_html
+  - my_browser_get_text
+  - my_browser_session_save
+  - my_browser_session_restore
+hooks:
+  - on_session_start
+  - on_session_end
