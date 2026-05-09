@@ -12,12 +12,15 @@ Side panel side-by-side with the page you're browsing: the page on the left, the
 
 ![Hermes Browser Extension side panel next to the page you are browsing](docs/sidepanel-demo.png)
 
-## What you get
+## Two core wins
 
-- **Dedicated agent window** — navigation, screenshots, clicks, and script runs happen there; your active tabs and focus stay where you are.
-- **No `chrome.debugger`** — same profile (cookies, logins, bookmarks) as your daily browser; no CDP-style “debugging this browser” strip.
-- **Tampermonkey-compatible userscripts** — `GM_*` / `GM.*`, `@require` / `@resource`, `@run-at`, `@match` / `@include` / `@exclude`; agent tools can list, install, enable, and **force-run** scripts on the agent tab.
-- **Hermes chat side panel** — `chrome.sidePanel` talks to the local Hermes gateway OpenAI-compatible HTTP API (`/v1/chat/completions` with SSE), similar in spirit to embedding a bot in the browser, fully on your machine.
+1. **Chat inside your browser** — talk to Hermes in the Chrome side panel without flipping to a terminal or external app. **Page** mode automatically pipes the active tab into the conversation as context, so questions like "what is this page about?" or "compare this page to the previous one" need no copy-paste.
+2. **Agent shares your browser state** — through the extension bridge, the agent runs inside the **same Chrome profile you use every day**. It sees the same cookies, logins, and localStorage you do, so every site you're already signed into works for the agent too — no separate session to maintain. The agent's own actions happen in a dedicated **agent window** within that profile, never stealing focus from your main window.
+
+### Bonus capabilities
+
+- No `chrome.debugger` / CDP — no "Chrome is being controlled by automated test software" banner anywhere.
+- **Tampermonkey-compatible userscript engine** — `GM_*` / `GM.*`, `@require` / `@resource`, `@run-at`, `@match` / `@include` / `@exclude`; agent tools list, install, enable, and **force-run** scripts on the agent tab (parameters via `GM_info.scriptArgs`, so a script can act as a parameterised batch operation invoked by the agent).
 
 ## How it fits together
 

@@ -12,12 +12,15 @@
 
 ![Hermes Browser Extension 侧边栏与浏览中的网页同屏](docs/sidepanel-demo.png)
 
-## 能做什么
+## 两个核心亮点
 
-- **独立 Agent 窗口** — 跳转、截图、点击、跑脚本都在此窗口完成；你正在工作的标签与焦点保持不动。
-- **不用 `chrome.debugger`** — 与日常浏览器共享 cookies、登录态、书签；没有 CDP 那种「正在调试此浏览器」提示。
-- **Tampermonkey 兼容脚本** — 支持 `GM_*` / `GM.*`、`@require` / `@resource`、`@run-at`、`@match` / `@include` / `@exclude`；Agent 工具可列出、安装、开关，并在 Agent 标签上 **强制运行** 脚本。
-- **Hermes 对话侧边栏** — `chrome.sidePanel` 通过本机 Hermes Gateway 的 OpenAI 兼容 HTTP API（`/v1/chat/completions` + SSE）实时对话，数据走本机。
+1. **浏览器内对话** — 在 Chrome 侧边栏里直接和 Hermes 对话，不需要切到终端或别的 App；**Page** 模式会自动把当前标签页内容作为上下文带入对话，问"这个页面在讲什么"、"帮我对比这页和上一页"都不需要复制粘贴。
+2. **状态与你的浏览器同步** — 通过浏览器扩展 bridge，Agent 工作在**你日常使用的同一个 Chrome profile** 里。它看到的 cookies、登录态、localStorage 跟你完全一致——你已经登录过的网站，Agent 直接就能用，不用为它单独维护一套 session。它自己的操作发生在 profile 内的独立 **Agent 窗口**，不抢你主窗口焦点。
+
+### 衍生能力
+
+- 不用 `chrome.debugger` / CDP，没有「正由自动化测试软件控制」之类的调试条。
+- **Tampermonkey 兼容脚本引擎** — 支持 `GM_*` / `GM.*`、`@require` / `@resource`、`@run-at`、`@match` / `@include` / `@exclude`；Agent 工具可列出、安装、开关，并在 Agent 标签上 **强制运行** 脚本（参数通过 `GM_info.scriptArgs` 传入，可作为参数化批量任务调用）。
 
 ## 架构示意
 
