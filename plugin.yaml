@@ -1,13 +1,17 @@
 manifest_version: 1
 name: hermes-my-browser-extension
-version: 0.2.0
+version: 0.3.0
 description: >
-  Browser extension plugin for Hermes Agent. The agent operates in a
-  dedicated background Chrome window via stock chrome.* APIs — no
-  debugger banner, no focus stealing, doesn't disturb the user's tabs.
-author: "MOSS"
+  Browser extension plugin for Hermes Agent. Built on Plasmo + TypeScript +
+  React + shadcn/ui. The agent operates in a dedicated background Chrome
+  window via stock chrome.* APIs (no debugger banner, no focus stealing),
+  ships a Tampermonkey-compatible userscript engine accessible to the
+  agent, and embeds a Hermes chat side panel that talks to the local
+  gateway HTTP API.
+author: "iHeyTang"
 kind: standalone
 provides_tools:
+  # Browser control
   - my_browser_connect
   - my_browser_disconnect
   - my_browser_status
@@ -20,6 +24,16 @@ provides_tools:
   - my_browser_get_text
   - my_browser_session_save
   - my_browser_session_restore
+  # Userscript engine (Tampermonkey-compatible)
+  - my_browser_userscript_list
+  - my_browser_userscript_get
+  - my_browser_userscript_install
+  - my_browser_userscript_save
+  - my_browser_userscript_remove
+  - my_browser_userscript_set_enabled
+  - my_browser_userscript_run
+  # Chat side panel discovery
+  - my_browser_chat_url
 hooks:
   - on_session_start
   - on_session_end

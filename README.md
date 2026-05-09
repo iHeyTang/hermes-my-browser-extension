@@ -1,103 +1,164 @@
-# hermes-my-browser-extension
+# Hermes Browser Extension
 
-让 Hermes Agent 在你**正在用的同一个 Chrome 浏览器**里干活——不需要 `--remote-debugging-port`，不需要重启浏览器，**也不会有"正在调试此浏览器"的提示条**，更**不会抢你正在用的标签页焦点**。
+**English** | [简体中文](README.zh-CN.md)
 
-## 设计
+Hermes Agent controls **the same Chrome profile you already use**—without `--remote-debugging-port`, without restarting the browser, **without the “Chrome is being controlled by automated test software” banner**, and **without stealing focus from the tab you are working in**.
 
-```
-你的 Chrome 浏览器 (一个 profile)
-├── 主窗口 (你在用)               ← Hermes 永远不碰
-│   ├── tab: GitHub
-│   ├── tab: 文档
-│   └── tab: 邮箱  ← active
-└── Agent 窗口 (Connect 时新开)    ← Hermes 只在这里操作
-    └── tab: 当前任务页
-```
+The extension (**Hermes Browser Extension**, Plasmo + TypeScript + React + shadcn/ui) connects Hermes tools to Chrome through a small Python bridge and a dedicated **agent window**. Your main window stays untouched.
 
-实现：扩展全程使用 `chrome.tabs` / `chrome.scripting` / `chrome.cookies` 这些常规 API，**完全不用 `chrome.debugger`**。所以：
+## Screenshot
 
-- ❌ 没有"扩展正在调试此浏览器"提示条
-- ❌ 不抢焦点（截图、点击、跑 JS 都在 agent 窗口里完成）
-- ❌ 不动你主窗口的任何 tab
-- ✅ 共享同一个 profile（cookies / 登录态 / 收藏夹都在）
+Side panel side-by-side with the page you're browsing: the page on the left, the chat on the right. **Page** mode automatically pulls the current tab's content in as context for the conversation, while the agent's own actions happen in a separate window that never interrupts you.
 
-数据流：
+![Hermes Browser Extension side panel next to the page you are browsing](docs/sidepanel-demo.png)
+
+## What you get
+
+- **Dedicated agent window** — navigation, screenshots, clicks, and script runs happen there; your active tabs and focus stay where you are.
+- **No `chrome.debugger`** — same profile (cookies, logins, bookmarks) as your daily browser; no CDP-style “debugging this browser” strip.
+- **Tampermonkey-compatible userscripts** — `GM_*` / `GM.*`, `@require` / `@resource`, `@run-at`, `@match` / `@include` / `@exclude`; agent tools can list, install, enable, and **force-run** scripts on the agent tab.
+- **Hermes chat side panel** — `chrome.sidePanel` talks to the local Hermes gateway OpenAI-compatible HTTP API (`/v1/chat/completions` with SSE), similar in spirit to embedding a bot in the browser, fully on your machine.
+
+## How it fits together
 
 ```
-Hermes 工具 ──ws──► bridge/server.py ──ws──► 扩展 background.js ──► chrome.tabs/scripting/cookies
-       (intent JSON)        (轻量 relay)                      (操作 agent 窗口/tab)
+Your Chrome (one profile)
+├── Main window (your work)          ← never touched by the agent
+│   └── tabs you care about
+└── Agent window (created on connect) ← only place Hermes drives
+    └── task tab(s)
 ```
 
-## 安装
+```
+Hermes tools ──ws──► bridge/server.py ──ws──► extension service worker ──► tabs / scripting / cookies
+                                                              └──► userscript engine
+
+Side panel ──HTTP SSE──► Hermes gateway (e.g. http://127.0.0.1:8642/v1)
+```
+
+## Quick start
+
+### 1. Install the Hermes plugin
 
 ```bash
-hermes plugins install <YOUR_USER>/hermes-my-browser-extension
+hermes plugins install iHeyTang/hermes-my-browser-extension
 ```
 
-装完会自动渲染 [`after-install.md`](./after-install.md) 的指引——按里面三步走（装 `websockets`、加载 Chrome 扩展、`hermes gateway restart`）就能用了。
+Hermes will surface the full post-install guide from [`after-install.md`](./after-install.md). The steps below are the short version.
 
-> 想换源 / 私有仓库时，identifier 也接受完整 git URL：
-> `hermes plugins install git@github.com:foo/hermes-my-browser-extension.git`
-
-## 工具
-
-| 工具 | 功能 |
-|------|------|
-| `my_browser_connect` | 打开/接管 agent 窗口（不抢焦点） |
-| `my_browser_disconnect` | 关掉 agent 窗口、断开 bridge |
-| `my_browser_status` | bridge 连接状态 + agent 窗口 URL/title |
-| `my_browser_navigate` | 在 agent tab 里跳转 URL，默认等加载完成 |
-| `my_browser_screenshot` | 截 agent tab 视口（PNG/JPEG） |
-| `my_browser_eval` | 在 agent tab 里跑 JS，返回结果 |
-| `my_browser_click` | 按 CSS selector 点击元素 |
-| `my_browser_type` | 按 selector 输入文本（触发 input/change 事件） |
-| `my_browser_get_html` | 拿 outerHTML（整页或选定元素） |
-| `my_browser_get_text` | 拿 innerText（整页或选定元素） |
-| `my_browser_session_save` | 保存 cookies + localStorage 快照 |
-| `my_browser_session_restore` | 恢复指定快照 |
-
-## 取舍
-
-相对于"用 chrome.debugger 透传 CDP"的实现：
-
-**得**：
-- 用户主窗口零打扰，零提示条
-- 截图不抢焦点（`chrome.tabs.captureVisibleTab` 在 agent 窗口里独立工作）
-- 多窗口隔离干净
-
-**失**：
-- 不再支持任意 CDP 命令（`Network.setRequestInterception`、`Emulation.*`、Performance trace 这些没有了）
-- 截图退化成 viewport（不是全页）
-- 严格 CSP 页面 `my_browser_eval` 默认会被拒（用 `world="ISOLATED"` 解决大部分情况）
-
-如果你需要完整 CDP 能力，请用直接走 `chrome --remote-debugging-port` 那条路（不在本插件范围）。
-
-## 卸载
+### 2. Python dependency (bridge)
 
 ```bash
-hermes plugins remove hermes-my-browser-extension
-# 同时在 chrome://extensions/ 里移除扩展
+~/.hermes/hermes-agent/venv/bin/pip install 'websockets>=12'
 ```
 
-## 本地开发
+### 3. Build the extension
 
-软链 + enable，改动免重装：
+Requires **Node.js ≥ 20** and **pnpm**.
+
+```bash
+cd ~/.hermes/plugins/hermes-my-browser-extension/extension
+pnpm install
+pnpm build
+```
+
+Output: `extension/build/chrome-mv3-prod/`. For development, use `pnpm dev` → `build/chrome-mv3-dev/`.
+
+### 4. Load in Chrome
+
+1. Open `chrome://extensions/`
+2. Enable **Developer mode**
+3. **Load unpacked** → select  
+   `~/.hermes/plugins/hermes-my-browser-extension/extension/build/chrome-mv3-prod`
+
+### 5. Gateway and chat (one-time)
+
+For the side panel to reach the gateway, set in `~/.hermes/.env` (then `hermes gateway restart`):
+
+| Variable | Purpose |
+|----------|---------|
+| `API_SERVER_ENABLED=true` | Enables the OpenAI-compatible HTTP API |
+| `API_SERVER_KEY=<token>` | Bearer token; paste the same value in the extension **Options → Settings → API key** |
+| `API_SERVER_CORS_ORIGINS=*` | Allows `chrome-extension://…` origins (API binds to localhost) |
+
+Example append + restart:
+
+```bash
+{ echo 'API_SERVER_ENABLED=true'
+  grep -q '^API_SERVER_KEY=' ~/.hermes/.env || echo "API_SERVER_KEY=$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-43)"
+  grep -q '^API_SERVER_CORS_ORIGINS=' ~/.hermes/.env || echo 'API_SERVER_CORS_ORIGINS=*'
+} >> ~/.hermes/.env
+hermes gateway restart
+```
+
+Details and troubleshooting: [`after-install.md`](./after-install.md#required-gateway-config).
+
+### 6. Connect from Chrome
+
+```bash
+hermes gateway restart
+```
+
+- Click the extension icon → **side panel** opens.
+- In the status bar above the input, click **● Offline** until it shows **● Online**.
+- A small background window appears — that is the **agent window**. Use the window icon next to the status pill to bring it to the front when you want to watch the agent.
+
+### 7. Smoke test (Hermes agent)
+
+```text
+@my_browser_connect
+@my_browser_navigate url=https://example.com
+@my_browser_screenshot
+@my_browser_get_text selector=h1
+```
+
+You should get a viewport screenshot path and the heading text, without your main window losing focus.
+
+## Agent tools (summary)
+
+**Browser:** `my_browser_connect`, `my_browser_disconnect`, `my_browser_status`, `my_browser_navigate`, `my_browser_screenshot`, `my_browser_eval`, `my_browser_click`, `my_browser_type`, `my_browser_get_html`, `my_browser_get_text`, `my_browser_session_save`, `my_browser_session_restore`.
+
+**Userscripts:** `my_browser_userscript_list`, `my_browser_userscript_get`, `my_browser_userscript_install`, `my_browser_userscript_save`, `my_browser_userscript_remove`, `my_browser_userscript_set_enabled`, `my_browser_userscript_run` (runs on the agent tab; optional `args` → `GM_info.scriptArgs`).
+
+**Chat:** `my_browser_chat_url` — discovers the gateway base URL (e.g. `http://127.0.0.1:8642/v1`) for Settings.
+
+Full GM API list and behavior: [`after-install.md`](./after-install.md).
+
+## Trade-offs vs CDP / remote debugging
+
+**You gain:** no banner, no focus stealing on screenshots, clean window separation, userscripts + side-panel chat without extra extensions.
+
+**You lose:** arbitrary CDP (e.g. full network interception, emulation knobs), viewport-only screenshots (not full-page), strict CSP pages may reject `my_browser_eval` unless you use `world="ISOLATED"` where applicable.
+
+For full CDP, use Chrome with `--remote-debugging-port` and a CDP client—that is outside this plugin’s scope.
+
+## Local development (repo clone)
 
 ```bash
 ln -sf "$(pwd)" ~/.hermes/plugins/hermes-my-browser-extension
 hermes plugins enable hermes-my-browser-extension
 hermes gateway restart
+
+cd extension
+pnpm install
+pnpm dev    # or pnpm build
 ```
 
-调试日志：
-- bridge 端：`~/.hermes/logs/my-browser-bridge.log`
-- 扩展端：`chrome://extensions/` → 找到 Hermes Browser Bridge → 点击 service worker
+Logs: bridge `~/.hermes/logs/my-browser-bridge.log`; extension service worker from `chrome://extensions/` → **Inspect views: service worker**.
 
-## 依赖
+## Requirements
 
-- Hermes Agent ≥ 0.11.0
-- `websockets >= 12`（用 Hermes 的 venv 装：`~/.hermes/hermes-agent/venv/bin/pip install 'websockets>=12'`）
-- Chrome / Chromium（开发者模式加载 `extension/`）
+- Hermes Agent ≥ **0.11.0**
+- Python `websockets` ≥ 12 in Hermes’s venv (see step 2)
+- Node ≥ 20, pnpm, Chrome/Chromium
+
+## Uninstall
+
+```bash
+hermes plugins remove hermes-my-browser-extension
+```
+
+Also remove the extension from `chrome://extensions/`.
 
 ## License
 

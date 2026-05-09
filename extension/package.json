@@ -1,0 +1,80 @@
+{
+  "name": "hermes-browser-extension",
+  "displayName": "Hermes Browser Extension",
+  "version": "0.3.0",
+  "description": "Hermes Agent operates in a dedicated background window — runs Tampermonkey-compatible userscripts, exposes scripts to the agent, and embeds a Hermes chat side panel.",
+  "author": "iHeyTang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iHeyTang/hermes-my-browser-extension.git"
+  },
+  "private": true,
+  "scripts": {
+    "dev": "plasmo dev",
+    "build": "plasmo build",
+    "package": "plasmo package"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/lang-javascript": "^6.2.2",
+    "@codemirror/state": "^6.4.1",
+    "@codemirror/theme-one-dark": "^6.1.2",
+    "@codemirror/view": "^6.34.1",
+    "@radix-ui/react-dialog": "^1.1.2",
+    "@radix-ui/react-label": "^2.1.0",
+    "@radix-ui/react-scroll-area": "^1.2.1",
+    "@radix-ui/react-separator": "^1.1.0",
+    "@radix-ui/react-slot": "^1.1.0",
+    "@radix-ui/react-switch": "^1.1.1",
+    "@radix-ui/react-tabs": "^1.1.1",
+    "@radix-ui/react-tooltip": "^1.1.4",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.1",
+    "codemirror": "^6.0.1",
+    "lucide-react": "^0.460.0",
+    "plasmo": "0.90.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "streamdown": "^2.5.0",
+    "tailwind-merge": "^2.5.4"
+  },
+  "@parcel/resolver-default": {
+    "packageExports": true
+  },
+  "devDependencies": {
+    "@ianvs/prettier-plugin-sort-imports": "4.4.0",
+    "@types/chrome": "0.0.281",
+    "@types/node": "22.9.0",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.4.49",
+    "prettier": "3.3.3",
+    "tailwindcss": "3.4.15",
+    "typescript": "5.6.3"
+  },
+  "manifest": {
+    "name": "Hermes",
+    "permissions": [
+      "tabs",
+      "scripting",
+      "cookies",
+      "storage",
+      "alarms",
+      "sidePanel",
+      "notifications",
+      "downloads",
+      "unlimitedStorage",
+      "declarativeNetRequestWithHostAccess"
+    ],
+    "host_permissions": [
+      "<all_urls>"
+    ],
+    "side_panel": {
+      "default_path": "sidepanel.html"
+    },
+    "options_ui": {
+      "open_in_tab": true
+    }
+  }
+}

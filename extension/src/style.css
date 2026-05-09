@@ -1,0 +1,464 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * The extension UI inherits the browser's color scheme by default. We don't
+ * paint a custom background on any surface; instead the shadcn-style HSL
+ * tokens below are flipped between light and dark. The order of cascade is:
+ *
+ *   1. `:root` defines the light palette (also the SSR-time fallback).
+ *   2. `@media (prefers-color-scheme: dark)` rewrites the tokens to the dark
+ *      palette unless the document explicitly opted into light via `.light`.
+ *   3. The explicit `.dark` / `.light` classes (set by the React theme hook)
+ *      always win — that lets the user pin a theme or mirror the active
+ *      page's appearance regardless of the browser preference.
+ */
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 10% 3.9%;
+    --success: 142 71% 45%;
+    --warning: 38 92% 50%;
+    --radius: 0.5rem;
+    /*
+     * Streamdown ships with hard-coded Tailwind utilities like `bg-sidebar`
+     * for code blocks and table wrappers. The token isn't part of our shadcn
+     * palette, so without an alias they render with no fill and look broken.
+     * We map it to a soft surface that sits between background and muted.
+     */
+    --sidebar: 240 5% 97.5%;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not(.light) {
+      color-scheme: dark;
+      --background: 240 10% 3.9%;
+      --foreground: 0 0% 98%;
+      --card: 240 10% 3.9%;
+      --card-foreground: 0 0% 98%;
+      --popover: 240 10% 3.9%;
+      --popover-foreground: 0 0% 98%;
+      --primary: 0 0% 98%;
+      --primary-foreground: 240 5.9% 10%;
+      --secondary: 240 3.7% 15.9%;
+      --secondary-foreground: 0 0% 98%;
+      --muted: 240 3.7% 15.9%;
+      --muted-foreground: 240 5% 64.9%;
+      --accent: 240 3.7% 15.9%;
+      --accent-foreground: 0 0% 98%;
+      --destructive: 0 62.8% 30.6%;
+      --destructive-foreground: 0 0% 98%;
+      --border: 240 3.7% 15.9%;
+      --input: 240 3.7% 15.9%;
+      --ring: 240 4.9% 83.9%;
+      --success: 142 71% 45%;
+      --warning: 38 92% 50%;
+      --sidebar: 240 6% 10%;
+    }
+  }
+
+  .dark,
+  :root.dark {
+    color-scheme: dark;
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+    --success: 142 71% 45%;
+    --warning: 38 92% 50%;
+    --sidebar: 240 6% 10%;
+  }
+
+  .light,
+  :root.light {
+    color-scheme: light;
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 10% 3.9%;
+    --success: 142 71% 45%;
+    --warning: 38 92% 50%;
+    --sidebar: 240 5% 97.5%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html,
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+html,
+body,
+#__plasmo {
+  height: 100%;
+  /*
+   * Disable the browser's rubber-band overscroll effect. Without this, when
+   * an inner ScrollArea hits its top/bottom boundary the residual scroll
+   * chains up to the document and the entire side panel bounces. `none`
+   * also prevents scroll chaining, which is what we want for a self-
+   * contained chat surface.
+   */
+  overscroll-behavior: none;
+}
+
+/*
+ * Defence in depth: also stop scroll chaining at the message viewport.
+ * Radix's ScrollArea wraps the scrollable element in a div with
+ * `data-radix-scroll-area-viewport`, so we can target it without exposing
+ * a new prop. `contain` keeps native momentum/keyboard scrolling working
+ * inside the viewport but blocks it from leaking to ancestors.
+ */
+[data-radix-scroll-area-viewport] {
+  overscroll-behavior: contain;
+}
+
+/*
+ * Radix ScrollAreaViewport wraps children in a div with inline
+ * `display: table` + `min-width: 100%`. That lets wide intrinsic content
+ * (long words, URLs, markdown) expand the layout past the panel edge
+ * instead of wrapping. Override to a normal block BFC so text respects
+ * the viewport width (`!important` wins over those inline styles).
+ */
+[data-radix-scroll-area-viewport] > div {
+  display: block !important;
+  min-width: 0 !important;
+  max-width: 100%;
+}
+
+/*
+ * Tab strip horizontal scroller (Cursor-style).
+ *
+ * We deliberately render NO scrollbar on the tab strip — even a thin 4px
+ * rail eats into the bottom of an already-cramped 28px-tall bar and
+ * visually competes with the tabs. Cursor / VSCode hide theirs the same
+ * way. Scrolling stays usable via:
+ *   - The vertical-wheel-pans-horizontally handler in `TabBar.tsx`.
+ *   - Trackpad horizontal pans (untouched, native).
+ *   - Auto `scrollIntoView` of the active tab when it changes.
+ *
+ * Firefox uses `scrollbar-width: none`; Chromium / WebKit honour the
+ * `::-webkit-scrollbar { display: none }` below.
+ */
+.tabbar-scroller {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.tabbar-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * Markdown styling for assistant bubbles. Streamdown's defaults (mt-6/mb-2 on
+ * headings, my-4 on blockquotes/code/lists, text-3xl on h1, etc.) are tuned
+ * for full-page content and feel both sparse and crude in a narrow chat
+ * panel. Our `.chat-md` scope swaps in a refined system + CJK font stack and
+ * a tighter type scale, while restoring enough breathing room that paragraphs
+ * and headings don't feel crammed together.
+ *
+ * Specificity note: Tailwind's `.space-y-* > :not([hidden]) ~ :not([hidden])`
+ * is (0,3,0). We mirror the same shape and add an extra class hit so our
+ * override is (0,4,0) and reliably wins.
+ */
+.chat-md {
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "Helvetica Neue",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    "Noto Sans CJK SC",
+    "Source Han Sans SC",
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+  color: hsl(var(--foreground));
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  overflow-wrap: break-word;
+}
+
+/* Block rhythm — gives every top-level child the same vertical gap. */
+.chat-md.chat-md > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0.7rem;
+}
+
+/* Headings: smaller, tighter scale tuned for ~360px panels. */
+.chat-md.chat-md [data-streamdown="heading-1"],
+.chat-md.chat-md [data-streamdown="heading-2"],
+.chat-md.chat-md [data-streamdown="heading-3"],
+.chat-md.chat-md [data-streamdown="heading-4"],
+.chat-md.chat-md [data-streamdown="heading-5"],
+.chat-md.chat-md [data-streamdown="heading-6"] {
+  margin-top: 1.1rem;
+  margin-bottom: 0.4rem;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: hsl(var(--foreground));
+}
+.chat-md.chat-md [data-streamdown="heading-1"]:first-child,
+.chat-md.chat-md [data-streamdown="heading-2"]:first-child,
+.chat-md.chat-md [data-streamdown="heading-3"]:first-child,
+.chat-md.chat-md [data-streamdown="heading-4"]:first-child,
+.chat-md.chat-md [data-streamdown="heading-5"]:first-child,
+.chat-md.chat-md [data-streamdown="heading-6"]:first-child {
+  margin-top: 0;
+}
+.chat-md.chat-md [data-streamdown="heading-1"] {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+.chat-md.chat-md [data-streamdown="heading-2"] {
+  font-size: 1.18rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.chat-md.chat-md [data-streamdown="heading-3"] {
+  font-size: 1.05rem;
+}
+.chat-md.chat-md [data-streamdown="heading-4"] {
+  font-size: 0.98rem;
+}
+.chat-md.chat-md [data-streamdown="heading-5"] {
+  font-size: 0.92rem;
+}
+.chat-md.chat-md [data-streamdown="heading-6"] {
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: hsl(var(--muted-foreground));
+}
+
+/* Paragraphs */
+.chat-md.chat-md p {
+  margin: 0;
+  line-height: 1.7;
+}
+
+/* Lists — outside markers + light indent so wrapped lines align nicely. */
+.chat-md.chat-md [data-streamdown="ordered-list"],
+.chat-md.chat-md [data-streamdown="unordered-list"] {
+  margin-top: 0.45rem;
+  margin-bottom: 0.45rem;
+  padding-left: 1.35rem;
+  list-style-position: outside;
+}
+.chat-md.chat-md [data-streamdown="unordered-list"] {
+  list-style-type: disc;
+}
+.chat-md.chat-md [data-streamdown="ordered-list"] {
+  list-style-type: decimal;
+}
+.chat-md.chat-md [data-streamdown="list-item"] {
+  padding-top: 0.1rem;
+  padding-bottom: 0.1rem;
+  line-height: 1.65;
+}
+.chat-md.chat-md [data-streamdown="list-item"]::marker {
+  color: hsl(var(--muted-foreground));
+}
+/* Nested lists shouldn't double their top/bottom margin. */
+.chat-md.chat-md [data-streamdown="list-item"] [data-streamdown="ordered-list"],
+.chat-md.chat-md [data-streamdown="list-item"] [data-streamdown="unordered-list"] {
+  margin-top: 0.15rem;
+  margin-bottom: 0.15rem;
+}
+
+/* Blockquote */
+.chat-md.chat-md [data-streamdown="blockquote"] {
+  margin: 0.75rem 0;
+  padding: 0.15rem 0 0.15rem 0.85rem;
+  border-left: 3px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+  font-style: normal;
+}
+
+/* Horizontal rule */
+.chat-md.chat-md [data-streamdown="horizontal-rule"] {
+  margin: 1rem 0;
+  border-color: hsl(var(--border));
+}
+
+/* Inline code — softer pill, slightly smaller, monospace stack. */
+.chat-md.chat-md [data-streamdown="inline-code"] {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.86em;
+  padding: 0.1em 0.42em;
+  border-radius: 5px;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  border: 1px solid hsl(var(--border) / 0.7);
+}
+
+/* Code block wrapper */
+.chat-md.chat-md [data-streamdown="code-block"] {
+  margin: 0.85rem 0;
+  border-radius: 8px;
+}
+
+/* Strong / bold */
+.chat-md.chat-md [data-streamdown="strong"] {
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+/* Links */
+.chat-md.chat-md [data-streamdown="link"] {
+  color: hsl(var(--primary));
+  text-decoration-color: hsl(var(--primary) / 0.4);
+  text-underline-offset: 2px;
+}
+.chat-md.chat-md [data-streamdown="link"]:hover {
+  text-decoration-color: hsl(var(--primary));
+}
+
+/* Tables — tighter padding, subtle header band, sane row dividers. */
+.chat-md.chat-md [data-streamdown="table-wrapper"] {
+  margin: 0.85rem 0;
+  padding: 0;
+  gap: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: transparent;
+}
+.chat-md.chat-md [data-streamdown="table"] {
+  font-size: 0.88rem;
+  border: 0;
+}
+.chat-md.chat-md [data-streamdown="table-header-cell"] {
+  padding: 0.5rem 0.7rem;
+  background: hsl(var(--muted) / 0.6);
+  font-weight: 600;
+  font-size: 0.85rem;
+  border-bottom: 1px solid hsl(var(--border));
+  white-space: normal;
+}
+.chat-md.chat-md [data-streamdown="table-cell"] {
+  padding: 0.5rem 0.7rem;
+  vertical-align: top;
+  line-height: 1.55;
+}
+.chat-md.chat-md
+  [data-streamdown="table-row"]:not(:last-child)
+  [data-streamdown="table-cell"] {
+  border-bottom: 1px solid hsl(var(--border) / 0.6);
+}
+
+/*
+ * "Thinking" placeholder shown in the assistant bubble while a request is in
+ * flight but no tokens have streamed in yet. The dot pulses (opacity + slight
+ * scale) so it reads as a live status, not a stray glyph. We use currentColor
+ * so it inherits the muted-foreground tone from its parent.
+ */
+@keyframes hermes-thinking-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+.hermes-thinking-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  background-color: currentColor;
+  animation: hermes-thinking-pulse 1.4s ease-in-out infinite;
+  /* Nudge optical alignment with adjacent text baselines. */
+  vertical-align: middle;
+}
+
+/*
+ * Breathing animation for Streamdown's trailing caret (rendered as the ::after
+ * pseudo of the last block via `content: var(--streamdown-caret)`). The
+ * caret only has visible content while `isAnimating` is true, so this rule
+ * is a no-op once streaming finishes.
+ */
+@keyframes hermes-caret-breath {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.chat-md > *:last-child::after {
+  animation: hermes-caret-breath 1.4s ease-in-out infinite;
+}
+
+/* Respect users who prefer reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  .hermes-thinking-dot,
+  .chat-md > *:last-child::after {
+    animation: none;
+  }
+}
