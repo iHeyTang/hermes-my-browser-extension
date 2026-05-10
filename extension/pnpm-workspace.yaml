@@ -1,0 +1,10 @@
+# patchedDependencies — property-information@7.1.0
+#
+# Plasmo/Parcel dev can prune property-information/lib/hast-to-react.js while code
+# still expects `hastToReact` (Streamdown → hast-util-to-jsx-runtime). Runtime
+# then throws e.g. "Cannot read properties of undefined (reading 'className')".
+# Inlining `hastToReact` in index.js avoids the pruned `require` edge.
+# See: extension/patches/property-information@7.1.0.patch
+#
+patchedDependencies:
+  property-information@7.1.0: patches/property-information@7.1.0.patch

@@ -27,6 +27,12 @@ import {
   updateUserscript,
 } from "./userscript/orchestrator";
 import { getScript } from "./userscript/store";
+import {
+  learnFinish,
+  learnStartTab,
+  learnStatus,
+  resolveTabForScope,
+} from "./learn-recorder";
 
 type Handler = (params?: Record<string, unknown>) => Promise<unknown>;
 
@@ -459,6 +465,42 @@ const userscript_run: Handler = async (params = {}) => {
 };
 
 // ---------------------------------------------------------------------------
+// Learn mode (record user demo → trace JSON for agent RPA)
+// ---------------------------------------------------------------------------
+
+const learn_start: Handler = async (params = {}) => {
+  const tabIdParam =
+    typeof params.tab_id === "number" && Number.isFinite(params.tab_id)
+      ? params.tab_id
+      : null;
+  const scope = params.scope === "agent" ? "agent" : "last_focused";
+  const tabId = await resolveTabForScope(scope, tabIdParam);
+  if (tabId === null) {
+    throw new Error(
+      "learn.start: no tab — use my_browser_connect for agent scope, or focus a normal browser window for last_focused.",
+    );
+  }
+  await learnStartTab(tabId);
+  return { ok: true, ...learnStatus() };
+};
+
+const learn_stop: Handler = async () => {
+  const st = learnStatus();
+  if (!st.active) {
+    return {
+      ok: true,
+      recording: false,
+      trace: null,
+      message: "learn.stop: not recording.",
+    };
+  }
+  const trace = await learnFinish();
+  return { ok: true, recording: false, trace };
+};
+
+const learn_status: Handler = async () => ({ ok: true, ...learnStatus() });
+
+// ---------------------------------------------------------------------------
 // Public dispatch table
 // ---------------------------------------------------------------------------
 
@@ -487,4 +529,7 @@ export const HANDLERS: Record<string, Handler> = {
   "userscript.remove": userscript_remove,
   "userscript.setEnabled": userscript_set_enabled,
   "userscript.run": userscript_run,
+  learn_start,
+  learn_stop,
+  learn_status,
 };

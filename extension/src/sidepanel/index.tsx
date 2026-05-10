@@ -1,19 +1,21 @@
 import {
   ArrowUp,
   Bot,
+  Disc,
   ExternalLink,
   File as FileIcon,
   FileText,
   Globe,
   History,
   ImageIcon,
+  Loader2,
   MousePointerClick,
   Paperclip,
   Pin,
   Plus,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 
 import "~style.css";
@@ -33,6 +35,8 @@ import {
   deleteAttachmentFile,
   formatBytesShort,
   isAttachmentReadOk,
+  classify,
+  readBlobAsAttachment,
   readFileAsAttachment,
 } from "~lib/attachments/read";
 import { formatFileAttachmentsForPrompt } from "~lib/attachments/format";
@@ -41,10 +45,12 @@ import type {
   AttachmentBadge,
   AttachmentKind,
 } from "~lib/attachments/types";
+import type { AttachmentReadResult } from "~lib/attachments/read";
 import { HermesHttpError, streamChat } from "~lib/chat/hermes-client";
 import {
   capturePageContext,
   formatPageContextsForPrompt,
+  getActiveBrowserTab,
   getPageRestrictedReason,
   type PageContext,
 } from "~lib/page-context/capture";
@@ -62,6 +68,24 @@ import { RunModeToggle } from "./RunModeToggle";
 import { SessionDrawer } from "./SessionDrawer";
 import { TabBar } from "./TabBar";
 
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = window.setTimeout(() => {
+      reject(new Error(`${label}（超过 ${Math.round(ms / 1000)} 秒）`));
+    }, ms);
+    p.then(
+      (v) => {
+        window.clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        window.clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
+
 const SETTINGS_KEYS = {
   apiBase: "settings.chat.apiBase",
   apiKey: "settings.chat.apiKey",
@@ -72,6 +96,9 @@ const SETTINGS_KEYS = {
   // design, persisting it would defeat the "resets after send" promise.
   runModeDefault: "settings.sidepanel.runModeDefault",
 };
+
+/** Composer input grows with text until this height, then scrolls internally. */
+const COMPOSER_TEXTAREA_MAX_PX = 200;
 
 interface UiMessage extends ChatMessage {
   uiId: string;
@@ -120,6 +147,25 @@ interface PinnedPage extends PageContext {
   uiId: string;
 }
 
+/** One user turn waiting while the model is still streaming the previous reply. */
+interface PendingChatTurn {
+  queueId: string;
+  text: string;
+  attachments: Attachment[];
+  pinnedPagesSnapshot: PinnedPage[];
+  pageModeSnapshot: boolean;
+  runModeSnapshot: RunTarget;
+}
+
+function previewPendingTurn(t: PendingChatTurn): string {
+  const parts: string[] = [];
+  const body = t.text.trim();
+  if (body) parts.push(body.length > 160 ? `${body.slice(0, 157)}…` : body);
+  const n = t.attachments.filter((a) => a.path && !a.uploading).length;
+  if (n > 0) parts.push(n === 1 ? "（1 个附件）" : `（${n} 个附件）`);
+  return parts.join(" ") || "（空）";
+}
+
 interface ChatError {
   message: string;
   hint?: string;
@@ -130,7 +176,7 @@ export default function SidePanel() {
   // opt into mirroring that page's theme via Settings → Theme = "Match
   // active page". Other preferences (`auto`/`light`/`dark`) behave the same
   // as in the popup/options.
-  useResolvedTheme({ allowPage: true });
+  useResolvedTheme();
 
   const sessions = useSessions();
 
@@ -176,13 +222,236 @@ export default function SidePanel() {
   // concept. After send we lift only a lightweight `AttachmentBadge`
   // onto the user message so the chip survives reloads.
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentUploading = attachments.some((a) => !!a.uploading);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [learnRecording, setLearnRecording] = useState(false);
+  const [learnEventCount, setLearnEventCount] = useState(0);
+  const [learnStopBusy, setLearnStopBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  /** Composer textarea: grows with content up to max, then scrolls inside. */
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const { tab: activeTab, refresh: refreshActiveTab } = useActiveTab();
   const abortRef = useRef<AbortController | null>(null);
+  /** FIFO: user turns composed while `busy`; shown above the composer and drained after each stream. */
+  const [pendingQueue, setPendingQueue] = useState<PendingChatTurn[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * Coalesce SSE `delta.content` strings into at most one React update per
+   * animation frame. Token-at-a-time `setActiveMessages` forces Streamdown /
+   * the whole tree to re-render hundreds of times per second and can wedge or
+   * OOM the side panel on long replies.
+   */
+  const streamChunkBufRef = useRef<{
+    assistantUiId: string;
+    pending: string;
+  } | null>(null);
+  const streamFlushRafRef = useRef<number | null>(null);
+
+  function cancelStreamChunkFlush(): void {
+    if (streamFlushRafRef.current != null) {
+      cancelAnimationFrame(streamFlushRafRef.current);
+      streamFlushRafRef.current = null;
+    }
+  }
+
+  function flushStreamChunksToMessages(): void {
+    const slot = streamChunkBufRef.current;
+    if (!slot || slot.pending.length === 0) return;
+    const delta = slot.pending;
+    slot.pending = "";
+    const uiId = slot.assistantUiId;
+    sessions.setActiveMessages((prev) => {
+      const next = (prev as UiMessage[]).slice();
+      const i = next.findIndex((m) => m.uiId === uiId);
+      if (i >= 0) {
+        next[i] = { ...next[i], content: next[i].content + delta };
+      }
+      return next;
+    });
+  }
+
+  function scheduleStreamChunkFlush(): void {
+    if (streamFlushRafRef.current != null) return;
+    streamFlushRafRef.current = requestAnimationFrame(() => {
+      streamFlushRafRef.current = null;
+      flushStreamChunksToMessages();
+      if (streamChunkBufRef.current?.pending) {
+        scheduleStreamChunkFlush();
+      }
+    });
+  }
+
+  useEffect(() => {
+    return () => {
+      cancelStreamChunkFlush();
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = composerTextareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const sh = el.scrollHeight;
+    const next = Math.min(sh, COMPOSER_TEXTAREA_MAX_PX);
+    el.style.height = `${next}px`;
+    el.style.overflowY = sh > COMPOSER_TEXTAREA_MAX_PX ? "auto" : "hidden";
+  }, [input, pendingQueue.length]);
+
+  async function refreshLearnStatus() {
+    try {
+      const r = (await chrome.runtime.sendMessage({
+        action: "learn.status",
+      })) as { ok?: boolean; active?: boolean; eventCount?: number };
+      if (r?.ok) {
+        setLearnRecording(!!r.active);
+        setLearnEventCount(
+          typeof r.eventCount === "number" ? r.eventCount : 0,
+        );
+      }
+    } catch {
+      // Service worker may not be ready yet.
+    }
+  }
+
+  async function startLearnFromPanel() {
+    try {
+      const tab = await getActiveBrowserTab();
+      if (tab?.id === undefined) {
+        setPageError(
+          "无法开始录制：没有检测到活动网页标签页。请先打开要演示的页面，再点「记录操作」。",
+        );
+        return;
+      }
+      const r = (await chrome.runtime.sendMessage({
+        action: "learn.start",
+        tabId: tab.id,
+      })) as { ok?: boolean; error?: string };
+      if (!r?.ok) {
+        setPageError(r?.error || "无法开始录制");
+        return;
+      }
+      await refreshLearnStatus();
+    } catch (e) {
+      setPageError(String((e as Error)?.message || e));
+    }
+  }
+
+  async function stopLearnToComposer() {
+    setLearnStopBusy(true);
+    let trace: unknown = null;
+    try {
+      const r = (await withTimeout(
+        chrome.runtime.sendMessage({ action: "learn.stop" }) as Promise<{
+          ok?: boolean;
+          trace?: unknown;
+          error?: string;
+        }>,
+        25_000,
+        "结束录制无响应（扩展后台可能未唤醒）",
+      )) as { ok?: boolean; trace?: unknown; error?: string };
+      if (!r?.ok) {
+        setPageError(r?.error || "结束录制失败");
+        return;
+      }
+      if (!r.trace) {
+        setPageError(
+          "当前没有在录制，或状态已失效。请先点「记录操作」再操作页面，然后点「结束并附加到对话」。",
+        );
+        await refreshLearnStatus();
+        return;
+      }
+      trace = r.trace;
+    } catch (e) {
+      setPageError(String((e as Error)?.message || e));
+      return;
+    } finally {
+      // Clear before attachment upload: put 可能因未连接桥接而长时间挂起，
+      // 不应让「结束」按钮一直卡在「处理中」。
+      setLearnStopBusy(false);
+    }
+
+    await refreshLearnStatus();
+
+    try {
+      const st = (await chrome.runtime.sendMessage({
+        action: "status",
+      })) as { connected?: boolean };
+      if (!st?.connected) {
+        setAttachmentError(
+          "未连接 Hermes 桥接，无法上传录制轨迹。请先点击状态栏「Online」，再点一次「结束并附加到对话」。",
+        );
+        await refreshLearnStatus();
+        return;
+      }
+    } catch {
+      setAttachmentError("无法检测桥接状态，请确认已连接 Hermes 后再试。");
+      await refreshLearnStatus();
+      return;
+    }
+
+    setAttachmentBusy(true);
+    setAttachmentError(null);
+    const sessionId = sessions.ready
+      ? await sessions.ensureActive()
+      : "default";
+    const name = `learn-trace-${Date.now()}.json`;
+    const blob = new Blob([JSON.stringify(trace, null, 2)], {
+      type: "application/json",
+    });
+    const pendingUiId = shortId("att");
+    const pending: Attachment = {
+      uiId: pendingUiId,
+      name,
+      mime: "application/json",
+      size: blob.size,
+      kind: classify(name, "application/json"),
+      uploading: true,
+    };
+    setAttachments((prev) => [...prev, pending]);
+    try {
+      const read = (await withTimeout(
+        readBlobAsAttachment({
+          blob,
+          name,
+          mime: "application/json",
+          options: { sessionId, uiId: pendingUiId },
+        }),
+        130_000,
+        "上传录制轨迹超时（请保持 Hermes 在线；轨迹过大时也会较慢）",
+      )) as AttachmentReadResult;
+      if (!isAttachmentReadOk(read)) {
+        const hint =
+          read.error.includes("No Hermes plugin peer") ||
+          read.error.includes("role=agent")
+            ? "扩展已连桥接，但 Hermes 未以插件身份连上（缺 agent 端）。请启动 Hermes 并加载本浏览器插件。"
+            : "请确认 Hermes 已启动、桥接已连接，且网关正常。";
+        setAttachmentError(`${read.name}: ${read.error} ${hint}`);
+        setAttachments((prev) => prev.filter((a) => a.uiId !== pendingUiId));
+        return;
+      }
+      setAttachments((prev) =>
+        prev.map((a) => (a.uiId === pendingUiId ? read.attachment : a)),
+      );
+      setPageError(null);
+    } catch (e) {
+      setAttachmentError(String((e as Error)?.message || e));
+      setAttachments((prev) => prev.filter((a) => a.uiId !== pendingUiId));
+    } finally {
+      setAttachmentBusy(false);
+    }
+    await refreshLearnStatus();
+  }
+
+  useEffect(() => {
+    void refreshLearnStatus();
+    const onMsg = (msg: { type?: string }) => {
+      if (msg?.type === "learn:state") void refreshLearnStatus();
+    };
+    chrome.runtime.onMessage.addListener(onMsg);
+    return () => chrome.runtime.onMessage.removeListener(onMsg);
+  }, []);
 
   // Load chat-config on mount and watch for changes from the Options page so
   // the side panel always reflects the latest model / apiBase / apiKey.
@@ -308,7 +577,15 @@ export default function SidePanel() {
         abortRef.current.abort();
         abortRef.current = null;
       }
+      cancelStreamChunkFlush();
+      streamChunkBufRef.current = null;
       if (wasInitialised) {
+        setPendingQueue((prev) => {
+          for (const q of prev) {
+            for (const a of q.attachments) void deleteAttachmentFile(a);
+          }
+          return [];
+        });
         setPinnedPages([]);
         setPageError(null);
         // Same fire-and-forget GC as `newChat` — the composer-time
@@ -320,14 +597,24 @@ export default function SidePanel() {
     }
   }, [sessions.activeId]);
 
-  async function send() {
-    const text = input.trim();
-    // Allow send when the user has uploaded attachments but hasn't typed
-    // anything (e.g. "here's a screenshot — what's wrong with it?"). We
-    // still gate on having SOMETHING to send so an empty composer with
-    // no attachments stays a no-op.
-    if ((!text && attachments.length === 0) || busy) return;
-    if (!sessions.ready) return;
+  const composerHasSendablePayload =
+    !!input.trim() ||
+    attachments.some((a) => a.path && !a.uploading);
+
+  async function runChatTurn(args: {
+    text: string;
+    attachments: Attachment[];
+    pinnedPagesForTurn: PinnedPage[];
+    pageModeForTurn: boolean;
+    runModeForTurn: RunTarget;
+  }): Promise<void> {
+    const {
+      text,
+      attachments: attachmentsForTurn,
+      pinnedPagesForTurn,
+      pageModeForTurn,
+      runModeForTurn,
+    } = args;
 
     setError(null);
     setPageError(null);
@@ -341,8 +628,8 @@ export default function SidePanel() {
     //
     // Pinned entries take precedence on URL collision so we never re-extract
     // a page the user has already explicitly pinned.
-    const pages: PageContext[] = [...pinnedPages];
-    if (pageMode) {
+    const pages: PageContext[] = [...pinnedPagesForTurn];
+    if (pageModeForTurn) {
       const result = await capturePageContext();
       if (result.kind === "page") {
         if (!pages.some((p) => p.url === result.page.url)) {
@@ -368,19 +655,22 @@ export default function SidePanel() {
     // Every attachment — image, text, pdf, binary — flows through the same
     // `<file-attachment path="...">` system block. The agent reads the
     // file by path with whatever tools it has; we don't inline payloads.
+    const attachmentsForSend = attachmentsForTurn.filter(
+      (a) => a.path && !a.uploading,
+    );
     const fileSystemMessage: ChatMessage | null =
-      attachments.length > 0
+      attachmentsForSend.length > 0
         ? {
             role: "system",
-            content: formatFileAttachmentsForPrompt(attachments),
+            content: formatFileAttachmentsForPrompt(attachmentsForSend),
           }
         : null;
     // Build the persisted-on-bubble badges in parallel with the request:
     // images need a small thumbnail re-encode which is non-trivial, so we
     // kick that off but don't block the send path on it.
     const badgesPromise: Promise<AttachmentBadge[] | undefined> =
-      attachments.length > 0
-        ? Promise.all(attachments.map(attachmentToBadge))
+      attachmentsForSend.length > 0
+        ? Promise.all(attachmentsForSend.map(attachmentToBadge))
         : Promise.resolve(undefined);
 
     const userMsg: UiMessage = {
@@ -416,9 +706,6 @@ export default function SidePanel() {
         return next;
       });
     });
-    setInput("");
-    setAttachments([]);
-    setAttachmentError(null);
     setBusy(true);
 
     // Push the run-target for this turn into the SW *before* the chat
@@ -428,7 +715,7 @@ export default function SidePanel() {
     // capture the side-panel's window id so "user" mode has a stable
     // handle on the user's tab even if Chrome reshuffles focus
     // mid-conversation.
-    const turnRunMode = runMode;
+    const turnRunMode = runModeForTurn;
     try {
       if (turnRunMode === "user") {
         const win = await chrome.windows.getCurrent();
@@ -478,6 +765,12 @@ export default function SidePanel() {
       },
     ];
 
+    cancelStreamChunkFlush();
+    streamChunkBufRef.current = {
+      assistantUiId: assistantMsg.uiId,
+      pending: "",
+    };
+
     try {
       await streamChat(
         history,
@@ -490,13 +783,10 @@ export default function SidePanel() {
         },
         {
           onChunk: (delta) => {
-            sessions.setActiveMessages((prev) => {
-              const next = (prev as UiMessage[]).slice();
-              const i = next.findIndex((m) => m.uiId === assistantMsg.uiId);
-              if (i >= 0)
-                next[i] = { ...next[i], content: next[i].content + delta };
-              return next;
-            });
+            const slot = streamChunkBufRef.current;
+            if (!slot) return;
+            slot.pending += delta;
+            scheduleStreamChunkFlush();
           },
           onSession: (s) => {
             // 1:1 model: the extension owns the session id; only warn if
@@ -511,6 +801,9 @@ export default function SidePanel() {
           },
         },
       );
+      cancelStreamChunkFlush();
+      flushStreamChunksToMessages();
+      streamChunkBufRef.current = null;
       // After the stream resolves, ask the SW where the agent tab
       // currently is — this becomes the "Open in my browser →" chip on
       // the just-finished assistant bubble, the "teleport at end"
@@ -560,6 +853,9 @@ export default function SidePanel() {
     } catch (e) {
       const err = e as Error;
       if (err.name === "AbortError") {
+        cancelStreamChunkFlush();
+        flushStreamChunksToMessages();
+        streamChunkBufRef.current = null;
         sessions.setActiveMessages((prev) =>
           (prev as UiMessage[]).map((m) =>
             m.uiId === assistantMsg.uiId
@@ -572,6 +868,14 @@ export default function SidePanel() {
           ),
         );
       } else {
+        cancelStreamChunkFlush();
+        streamChunkBufRef.current = null;
+        setPendingQueue((pq) => {
+          for (const q of pq) {
+            for (const a of q.attachments) void deleteAttachmentFile(a);
+          }
+          return [];
+        });
         const message = String(err?.message || err);
         const hint =
           err instanceof HermesHttpError ? err.hint() || undefined : undefined;
@@ -581,13 +885,88 @@ export default function SidePanel() {
         );
       }
     } finally {
+      cancelStreamChunkFlush();
+      streamChunkBufRef.current = null;
       setBusy(false);
       abortRef.current = null;
+      setPendingQueue((prev) => {
+        if (prev.length === 0) return prev;
+        const [head, ...tail] = prev;
+        queueMicrotask(() =>
+          void runChatTurn({
+            text: head.text,
+            attachments: head.attachments,
+            pinnedPagesForTurn: head.pinnedPagesSnapshot,
+            pageModeForTurn: head.pageModeSnapshot,
+            runModeForTurn: head.runModeSnapshot,
+          }),
+        );
+        return tail;
+      });
     }
   }
 
+  async function send() {
+    const text = input.trim();
+    // Allow send when the user has uploaded attachments but hasn't typed
+    // anything (e.g. "here's a screenshot — what's wrong with it?"). We
+    // still gate on having SOMETHING to send so an empty composer with
+    // no attachments stays a no-op.
+    if (!text && attachments.every((a) => !a.path || a.uploading)) return;
+    if (attachmentUploading) return;
+    if (!sessions.ready) return;
+
+    const attachmentsForSend = attachments.filter((a) => a.path && !a.uploading);
+
+    if (busy) {
+      setPendingQueue((prev) => [
+        ...prev,
+        {
+          queueId: shortId("q"),
+          text,
+          attachments: attachmentsForSend.map((a) => ({ ...a })),
+          pinnedPagesSnapshot: pinnedPages.map((p) => ({ ...p })),
+          pageModeSnapshot: pageMode,
+          runModeSnapshot: runMode,
+        },
+      ]);
+      setInput("");
+      setAttachments([]);
+      setAttachmentError(null);
+      return;
+    }
+
+    setInput("");
+    setAttachments([]);
+    setAttachmentError(null);
+
+    await runChatTurn({
+      text,
+      attachments: attachmentsForSend,
+      pinnedPagesForTurn: pinnedPages,
+      pageModeForTurn: pageMode,
+      runModeForTurn: runMode,
+    });
+  }
+
   function stop() {
+    setPendingQueue((prev) => {
+      for (const q of prev) {
+        for (const a of q.attachments) void deleteAttachmentFile(a);
+      }
+      return [];
+    });
     abortRef.current?.abort();
+  }
+
+  function removePendingQueueItem(queueId: string) {
+    setPendingQueue((prev) => {
+      const hit = prev.find((q) => q.queueId === queueId);
+      if (hit) {
+        for (const a of hit.attachments) void deleteAttachmentFile(a);
+      }
+      return prev.filter((q) => q.queueId !== queueId);
+    });
   }
 
   // Show / hide the agent window — same SW action the popup already
@@ -632,6 +1011,12 @@ export default function SidePanel() {
     setError(null);
     setPinnedPages([]);
     setPageError(null);
+    setPendingQueue((prev) => {
+      for (const q of prev) {
+        for (const a of q.attachments) void deleteAttachmentFile(a);
+      }
+      return [];
+    });
     // Drop any composer-time attachments and unlink their on-disk files —
     // they were tied to the old session and won't be referenced again.
     for (const a of attachments) void deleteAttachmentFile(a);
@@ -743,34 +1128,55 @@ export default function SidePanel() {
     if (files.length === 0) return;
     setAttachmentBusy(true);
     setAttachmentError(null);
-    const sessionId = sessions.ready
-      ? await sessions.ensureActive()
-      : "default";
-    const errors: string[] = [];
-    const accepted: Attachment[] = [];
-    const results = await Promise.all(
-      files.map((f) => readFileAsAttachment(f, { sessionId })),
-    );
-    for (const r of results) {
-      if (isAttachmentReadOk(r)) {
-        accepted.push(r.attachment);
-      } else {
-        errors.push(`${r.name}: ${r.error}`);
+    const pendingUiIds: string[] = [];
+    try {
+      const sessionId = sessions.ready
+        ? await sessions.ensureActive()
+        : "default";
+      const errors: string[] = [];
+      const pending: Attachment[] = files.map((f) => ({
+        uiId: shortId("att"),
+        name: f.name || "file",
+        mime: f.type || "",
+        size: f.size,
+        kind: classify(f.name || "file", (f.type || "").toLowerCase()),
+        uploading: true,
+      }));
+      pendingUiIds.push(...pending.map((p) => p.uiId));
+      setAttachments((prev) => [...prev, ...pending]);
+      for (let i = 0; i < files.length; i += 1) {
+        const f = files[i];
+        const uiId = pending[i].uiId;
+        const r = await readFileAsAttachment(f, { sessionId, uiId });
+        if (isAttachmentReadOk(r)) {
+          setAttachments((prev) => {
+            if (!prev.some((a) => a.uiId === uiId)) {
+              if (r.attachment.path) void deleteAttachmentFile(r.attachment.path);
+              return prev;
+            }
+            return prev.map((a) => (a.uiId === uiId ? r.attachment : a));
+          });
+        } else {
+          errors.push(`${r.name}: ${r.error}`);
+          setAttachments((prev) => prev.filter((a) => a.uiId !== uiId));
+        }
       }
+      if (errors.length > 0) {
+        setAttachmentError(errors.join("\n"));
+      }
+    } catch (e) {
+      const msg = String((e as Error)?.message || e);
+      setAttachmentError(`附件处理异常：${msg}`);
+      setAttachments((prev) => prev.filter((a) => !pendingUiIds.includes(a.uiId)));
+    } finally {
+      setAttachmentBusy(false);
     }
-    if (accepted.length > 0) {
-      setAttachments((prev) => [...prev, ...accepted]);
-    }
-    if (errors.length > 0) {
-      setAttachmentError(errors.join("\n"));
-    }
-    setAttachmentBusy(false);
   }
 
   function removeAttachment(uiId: string) {
     setAttachments((prev) => {
       const target = prev.find((a) => a.uiId === uiId);
-      if (target) {
+      if (target?.path) {
         // Best-effort delete of the on-disk file — fire-and-forget so
         // the chip drops instantly without waiting on the bridge.
         void deleteAttachmentFile(target);
@@ -780,11 +1186,30 @@ export default function SidePanel() {
   }
 
   /**
-   * Open the hidden file picker. We re-set `value=""` first so picking
-   * the same file twice in a row still fires `onChange` (browsers
-   * suppress the event if the selection is identical).
+   * Open a multi-select file picker. Prefer `showOpenFilePicker({ multiple })`
+   * so Chromium shows a native multi-file dialog; fall back to a hidden
+   * `<input type="file" multiple>` when the API is missing or errors
+   * (e.g. some extension contexts). Re-set `value=""` on the fallback
+   * input so picking the same file twice still fires `onChange`.
    */
-  function openFilePicker() {
+  async function openFilePicker() {
+    const w = window as Window & {
+      showOpenFilePicker?: (opts?: {
+        multiple?: boolean;
+      }) => Promise<FileSystemFileHandle[]>;
+    };
+    if (typeof w.showOpenFilePicker === "function") {
+      try {
+        const handles = await w.showOpenFilePicker({ multiple: true });
+        if (handles.length === 0) return;
+        const files = await Promise.all(handles.map((h) => h.getFile()));
+        if (files.length > 0) void addFiles(files);
+        return;
+      } catch (e) {
+        if ((e as DOMException)?.name === "AbortError") return;
+        console.warn("[sidepanel] showOpenFilePicker failed, using fallback:", e);
+      }
+    }
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
       fileInputRef.current.click();
@@ -956,11 +1381,44 @@ export default function SidePanel() {
                 ]
               : []),
           ]}
+          afterConnection={
+            <div className="flex shrink-0 flex-wrap items-center gap-1">
+              {!learnRecording ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-6 gap-1 px-2 text-[11px]"
+                  disabled={attachmentUploading}
+                  title="在活动标签页记录点击与输入；结束后将轨迹 JSON 附加到对话，提示词由你自行编写"
+                  onClick={() => void startLearnFromPanel()}
+                >
+                  <Disc className="h-3 w-3 shrink-0" />
+                  记录操作
+                </Button>
+              ) : (
+                <>
+                  <span className="max-w-[10rem] truncate text-[11px] text-muted-foreground">
+                    录制中 · {learnEventCount} 步
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-6 px-2 text-[11px]"
+                    disabled={learnStopBusy || attachmentUploading}
+                    onClick={() => void stopLearnToComposer()}
+                  >
+                    {learnStopBusy ? "处理中…" : "结束并附加"}
+                  </Button>
+                </>
+              )}
+            </div>
+          }
         />
         <input
           ref={fileInputRef}
           type="file"
-          multiple
+          multiple={true}
           accept={ATTACHMENT_INPUT_ACCEPT}
           className="hidden"
           onChange={(e) => {
@@ -971,23 +1429,16 @@ export default function SidePanel() {
           }}
         />
         {/*
-          Cursor-style composer: the textarea and an internal action row live
-          inside a single rounded, bordered container. The textarea itself is
-          borderless / shadowless so the outer box is the only visible frame;
-          focus styling is delegated to the box via focus-within. The action
-          row at the bottom holds the circular send/stop button on the right
-          and a left-aligned "Page" toggle pill that streams the current
-          tab's content into the next request as a system message.
+          Cursor-style composer: optional queued turns render in a slim strip
+          *above* the bordered box (popup stack). The textarea + action row
+          stay inside the rounded frame; focus-within still targets that box.
         */}
         <div
           className={cn(
-            "relative flex flex-col rounded-lg border border-input bg-background shadow-sm transition-colors focus-within:border-ring/60",
-            dragOver && "border-primary/60 ring-2 ring-primary/30",
+            "relative flex w-full flex-col",
+            dragOver && "rounded-lg ring-2 ring-primary/30",
           )}
           onDragOver={(e) => {
-            // Only flag a "real" file drag — text-selection drags inside
-            // the textarea also fire dragover, but their dataTransfer
-            // doesn't contain the "Files" type.
             if (
               e.dataTransfer &&
               Array.from(e.dataTransfer.types || []).includes("Files")
@@ -997,8 +1448,6 @@ export default function SidePanel() {
             }
           }}
           onDragLeave={(e) => {
-            // Only clear the highlight when leaving the wrapper, not
-            // when the drag crosses an internal element boundary.
             if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
             setDragOver(false);
           }}
@@ -1014,6 +1463,42 @@ export default function SidePanel() {
             const files = Array.from(e.dataTransfer.files || []);
             if (files.length > 0) void addFiles(files);
           }}
+        >
+          {pendingQueue.length > 0 && (
+            <div
+              className={cn(
+                "relative z-[1] overflow-hidden rounded-t-lg border border-input border-b-0 bg-muted/50 shadow-[0_-2px_10px_-2px_rgba(0,0,0,0.12)] dark:bg-muted/35 dark:shadow-[0_-2px_14px_-2px_rgba(0,0,0,0.45)]",
+                dragOver && "border-primary/50",
+              )}
+            >
+              <ul className="max-h-[7rem] divide-y divide-border/60 overflow-y-auto">
+                {pendingQueue.map((item) => (
+                  <li
+                    key={item.queueId}
+                    className="flex items-start gap-1.5 py-1.5 pl-2.5 pr-1"
+                  >
+                    <p className="min-w-0 flex-1 truncate text-[12px] leading-snug text-foreground/90">
+                      {previewPendingTurn(item)}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => removePendingQueueItem(item.queueId)}
+                      className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      title="从队列移除"
+                      aria-label="从队列移除"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        <div
+          className={cn(
+            "relative flex flex-col rounded-lg border border-input bg-background shadow-sm transition-colors focus-within:border-ring/60",
+            pendingQueue.length > 0 && "rounded-t-none",
+          )}
         >
           {(() => {
             // The live current chip is suppressed when:
@@ -1067,19 +1552,29 @@ export default function SidePanel() {
             );
           })()}
           <Textarea
+            ref={composerTextareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={
-              attachments.length > 0
-                ? "Add a question about your file(s)…"
-                : pageMode
-                ? "Ask about this page…"
-                : "Message Hermes…"
+              attachmentUploading
+                ? "等待附件上传完成…"
+                : attachments.length > 0
+                  ? "Add a question about your file(s)…"
+                  : pageMode
+                    ? "Ask about this page…"
+                    : "Message Hermes…"
             }
             rows={2}
-            className="min-h-[56px] resize-none border-0 bg-transparent px-3 py-2 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+            style={{ maxHeight: COMPOSER_TEXTAREA_MAX_PX }}
+            className="min-h-9 resize-none overflow-hidden border-0 bg-transparent px-3 py-2 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
             onPaste={handleComposerPaste}
             onKeyDown={(e) => {
+              // Ignore Enter while an IME (e.g. Chinese) is composing — the
+              // user may press Enter to commit Latin/pinyin, not to send.
+              const ne = e.nativeEvent;
+              if (ne.isComposing || e.key === "Process") {
+                return;
+              }
               if (
                 (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ||
                 (e.key === "Enter" && !e.shiftKey && !e.altKey)
@@ -1088,70 +1583,58 @@ export default function SidePanel() {
                 void send();
               }
             }}
-            disabled={busy}
           />
-          {dragOver && (
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-primary/5 text-[12px] font-medium text-primary">
-              Drop files to attach
-            </div>
-          )}
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
-            {busy ? (
-              // While streaming we collapse the pre-run pills (Paperclip /
-              // Page / RunModeToggle) into a live status cluster so the
-              // composer's bottom row doubles as the run-status bar — one
-              // chrome row instead of two. Mirrors the affordances of the
-              // old standalone <RunStatusBar/>: pulse + label, plus the
-              // mid-run hand-off buttons when the agent is working in its
-              // own window. Stop stays on the right slot, replacing Send.
-              <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-muted-foreground">
-                <span aria-hidden className="hermes-thinking-dot shrink-0" />
-                {runMode === "user" ? (
-                  <MousePointerClick className="h-3 w-3 shrink-0" />
-                ) : (
-                  <Bot className="h-3 w-3 shrink-0" />
-                )}
-                <span className="min-w-0 truncate">
-                  {runMode === "user"
-                    ? "Driving your tab"
-                    : "Working in background"}
-                </span>
-                {runMode !== "user" && (
-                  <div className="ml-auto flex shrink-0 items-center gap-1">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => void showAgentWindow()}
-                      className="h-5 px-1.5 text-[10px]"
-                      title="Bring the agent's background window forward"
-                    >
-                      Show window
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => void moveToMyTab()}
-                      className="h-5 px-1.5 text-[10px]"
-                      title="Switch to your tab and bring the agent's current URL with you"
-                    >
-                      Move to my tab
-                    </Button>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground">
+              {busy && (
+                <>
+                  <span aria-hidden className="hermes-thinking-dot shrink-0" />
+                  {runMode === "user" ? (
+                    <MousePointerClick className="h-3 w-3 shrink-0" />
+                  ) : (
+                    <Bot className="h-3 w-3 shrink-0" />
+                  )}
+                  <span className="min-w-0 max-w-[10rem] truncate sm:max-w-[14rem]">
+                    {runMode === "user"
+                      ? "Driving your tab"
+                      : "Working in background"}
+                  </span>
+                  {runMode !== "user" && (
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void showAgentWindow()}
+                        className="h-5 px-1.5 text-[10px]"
+                        title="Bring the agent's background window forward"
+                      >
+                        Show window
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => void moveToMyTab()}
+                        className="h-5 px-1.5 text-[10px]"
+                        title="Switch to your tab and bring the agent's current URL with you"
+                      >
+                        Move to my tab
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+              <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
-                onClick={openFilePicker}
-                disabled={busy || attachmentBusy}
-                title="Attach files (images, text, code)"
+                onClick={() => void openFilePicker()}
+                disabled={attachmentBusy || attachmentUploading}
+                title="附加文件（可多选）· Attach files"
                 aria-label="Attach files"
                 className={cn(
                   "inline-flex h-6 w-6 items-center justify-center rounded-full border border-border bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-                  (busy || attachmentBusy) &&
+                  (attachmentBusy || attachmentUploading) &&
                     "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-muted-foreground",
                 )}
               >
@@ -1240,37 +1723,58 @@ export default function SidePanel() {
                 />
               </button>
               </div>
-              <RunModeToggle
-                mode={runMode}
-                disabled={busy}
-                onChange={setRunMode}
-              />
+              <RunModeToggle mode={runMode} onChange={setRunMode} />
               </div>
-            )}
+            </div>
             {busy ? (
-              <Button
-                size="icon"
-                onClick={stop}
-                title="Stop"
-                className="h-6 w-6 rounded-full"
-              >
-                <span
-                  aria-hidden
-                  className="block h-2 w-2 rounded-[1.5px] bg-current"
-                />
-              </Button>
+              composerHasSendablePayload ? (
+                <Button
+                  size="icon"
+                  onClick={() => void send()}
+                  disabled={attachmentUploading || attachmentBusy}
+                  title="加入队列，本轮结束后发送"
+                  className="h-6 w-6 shrink-0 rounded-full [&_svg]:size-3"
+                >
+                  <ArrowUp strokeWidth={3} />
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  size="icon"
+                  onClick={stop}
+                  title="停止生成"
+                  aria-label="停止生成"
+                  className="h-6 w-6 shrink-0 rounded-full"
+                >
+                  <span
+                    aria-hidden
+                    className="block h-2 w-2 rounded-[1.5px] bg-current"
+                  />
+                </Button>
+              )
             ) : (
               <Button
                 size="icon"
                 onClick={() => void send()}
-                disabled={!input.trim() && attachments.length === 0}
+                disabled={
+                  (!input.trim() &&
+                    !attachments.some((a) => a.path && !a.uploading)) ||
+                  attachmentUploading ||
+                  attachmentBusy
+                }
                 title="Send (⌘/Ctrl+Enter)"
-                className="h-6 w-6 rounded-full [&_svg]:size-3"
+                className="h-6 w-6 shrink-0 rounded-full [&_svg]:size-3"
               >
                 <ArrowUp strokeWidth={3} />
               </Button>
             )}
           </div>
+        </div>
+        {dragOver && (
+          <div className="pointer-events-none absolute inset-0 z-[8] flex items-center justify-center rounded-lg bg-primary/5 text-[12px] font-medium text-primary">
+            Drop files to attach
+          </div>
+        )}
         </div>
       </footer>
 
@@ -1281,7 +1785,6 @@ export default function SidePanel() {
         activeId={sessions.activeId}
         onClose={() => setHistoryOpen(false)}
         onOpen={(id) => void sessions.openTab(id)}
-        onCreate={() => void sessions.createNew()}
         onRename={(id, title) => void sessions.rename(id, title)}
         onDelete={(id) => void sessions.remove(id)}
       />
@@ -1485,7 +1988,9 @@ interface AttachmentChipProps {
  */
 function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
   const sizeLabel = formatBytesShort(attachment.size);
-  const titleLines: string[] = [attachment.name];
+  const titleLines: string[] = [];
+  if (attachment.uploading) titleLines.push("上传中…");
+  titleLines.push(attachment.name);
   titleLines.push(`${attachment.kind} • ${sizeLabel}`);
   if (attachment.mime) titleLines.push(attachment.mime);
   if (attachment.path) titleLines.push(attachment.path);
@@ -1500,8 +2005,16 @@ function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
     <div
       className="group inline-flex h-6 max-w-[220px] items-center gap-1 rounded-full border border-border bg-muted/40 pl-0.5 pr-1 text-[11px] text-muted-foreground"
       title={titleLines.join("\n")}
+      aria-busy={attachment.uploading || undefined}
     >
-      {attachment.kind === "image" && attachment.thumbDataUrl ? (
+      {attachment.uploading ? (
+        <span className="ml-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted/60">
+          <Loader2
+            className="h-3.5 w-3.5 animate-spin text-foreground"
+            aria-label="上传中"
+          />
+        </span>
+      ) : attachment.kind === "image" && attachment.thumbDataUrl ? (
         <img
           src={attachment.thumbDataUrl}
           alt=""
@@ -1512,7 +2025,10 @@ function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
           <KindIcon kind={attachment.kind} className="h-3 w-3" />
         </span>
       )}
-      <span className="truncate">{attachment.name}</span>
+      <span className="truncate">
+        {attachment.uploading ? "上传中 · " : ""}
+        {attachment.name}
+      </span>
       {attachment.fromPageContext && (
         <span
           className="ml-0.5 rounded-sm bg-foreground/10 px-1 text-[9px] uppercase tracking-wide text-muted-foreground"
@@ -1625,6 +2141,15 @@ function AttachmentBadgeView({ badge }: AttachmentBadgeViewProps) {
   );
 }
 
+// Streamdown assumes string children; its code path uses `.length` / `.split`
+// on the markdown source. Persisted sessions or edge cases may still surface
+// null or non-string `content`, which would otherwise crash inside Streamdown.
+function bubbleTextContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (content == null) return "";
+  return String(content);
+}
+
 // Group the flat message list into "turns" (one user message + the assistant
 // replies that follow it, up to the next user message) and pin each user
 // bubble to the top of the scroll viewport via `position: sticky`. While the
@@ -1680,6 +2205,7 @@ function MessageTurns({ messages }: { messages: UiMessage[] }) {
 
 function Bubble({ m }: { m: UiMessage }) {
   if (m.role === "user") {
+    const bodyText = bubbleTextContent(m.content);
     // Prefer the new plural `pageBadges`. Fall back to the single legacy
     // `pageBadge` so messages saved by older builds still render their
     // attachment chip.
@@ -1696,7 +2222,7 @@ function Bubble({ m }: { m: UiMessage }) {
       pageBadges.length > 0 ||
       imageFileBadges.length > 0 ||
       textFileBadges.length > 0;
-    const hasContent = !!m.content && m.content.length > 0;
+    const hasContent = bodyText.length > 0;
     // Cursor-style user message: a single full-width rounded card. References
     // (page snapshots, text/image attachments) live INSIDE the card at the top
     // so the question + everything it pulls in always reads as one unit, even
@@ -1733,19 +2259,20 @@ function Bubble({ m }: { m: UiMessage }) {
           </div>
         )}
         {hasContent && (
-          <div className="whitespace-pre-wrap break-words">{m.content}</div>
+          <div className="whitespace-pre-wrap break-words">{bodyText}</div>
         )}
       </div>
     );
   }
   if (m.role === "assistant") {
+    const bodyText = bubbleTextContent(m.content);
     // While the request is in flight but no token has arrived yet, the bubble
     // would otherwise be just Streamdown's bare ● caret on an empty line —
     // which reads as a stray glyph rather than a status. Replace that with an
     // explicit "Thinking…" placeholder + breathing dot until content streams
     // in.
     const isEmptyStreaming =
-      !!m.streaming && (!m.content || m.content.trim() === "");
+      !!m.streaming && bodyText.trim() === "";
     if (isEmptyStreaming) {
       return (
         <div className="px-1 py-1 text-sm" aria-live="polite">
@@ -1765,7 +2292,7 @@ function Bubble({ m }: { m: UiMessage }) {
           isAnimating={!!m.streaming}
           className="chat-md break-words"
         >
-          {m.content}
+          {bodyText}
         </Streamdown>
         {/*
           Persist-to-bubble teleport chip for delegate-and-forget runs.
@@ -1786,7 +2313,7 @@ function Bubble({ m }: { m: UiMessage }) {
   }
   return (
     <div className="mx-3 rounded-md bg-muted/50 p-2 font-mono text-xs">
-      [{m.role}] {m.content}
+      [{m.role}] {bubbleTextContent(m.content)}
     </div>
   );
 }

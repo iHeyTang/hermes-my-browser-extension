@@ -1,0 +1,38 @@
+diff --git a/index.js b/index.js
+index e434f836da7749d7cee62e14cc2db710a8752c66..c144db32612ee0b813ab74ec9f022849021d7887 100644
+--- a/index.js
++++ b/index.js
+@@ -7,7 +7,32 @@ import {xlink} from './lib/xlink.js'
+ import {xmlns} from './lib/xmlns.js'
+ import {xml} from './lib/xml.js'
+ 
+-export {hastToReact} from './lib/hast-to-react.js'
++/**
++ * HAST → React prop names. Inlined in index.js: Plasmo/Parcel dev can prune
++ * ./lib/hast-to-react.js while hast-util-to-jsx-runtime (Streamdown, etc.)
++ * still needs `hastToReact`, causing runtime errors. Inlining avoids that edge.
++ *
++ * @type {Record<string, string>}
++ */
++export const hastToReact = {
++  classId: 'classID',
++  dataType: 'datatype',
++  itemId: 'itemID',
++  strokeDashArray: 'strokeDasharray',
++  strokeDashOffset: 'strokeDashoffset',
++  strokeLineCap: 'strokeLinecap',
++  strokeLineJoin: 'strokeLinejoin',
++  strokeMiterLimit: 'strokeMiterlimit',
++  typeOf: 'typeof',
++  xLinkActuate: 'xlinkActuate',
++  xLinkArcRole: 'xlinkArcrole',
++  xLinkHref: 'xlinkHref',
++  xLinkRole: 'xlinkRole',
++  xLinkShow: 'xlinkShow',
++  xLinkTitle: 'xlinkTitle',
++  xLinkType: 'xlinkType',
++  xmlnsXLink: 'xmlnsXlink',
++}
+ 
+ export const html = merge([aria, htmlBase, xlink, xmlns, xml], 'html')
+ 

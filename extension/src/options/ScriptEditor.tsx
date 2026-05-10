@@ -157,7 +157,7 @@ export function ScriptEditor({
       </div>
       <div
         ref={ref}
-        className="min-h-[480px] flex-1 overflow-hidden rounded-md border bg-card"
+        className="min-h-[480px] flex-1 overflow-hidden rounded-lg border border-border bg-muted/20"
       />
     </div>
   );

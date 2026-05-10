@@ -18,9 +18,12 @@ Protocol:
   Bridge → Hermes Plugin:
     (response forwarded verbatim)
 
-Usage:
-  python -m bridge.server              # start on default :9393
-  python -m bridge.server --port 9393  # custom port
+Usage (from this repo root, so `bridge` is importable):
+  python -m bridge.server
+  python -m bridge.server --port 9393 --http-attach-port 9394
+
+Side-panel uploads use HTTP POST http://127.0.0.1:<http-attach-port>/attach
+(raw body). WebSocket on --port is unchanged for agent ↔ extension.
 """
 
 from __future__ import annotations
@@ -37,6 +40,8 @@ try:
     from websockets.asyncio.server import ServerConnection, serve
 except ImportError:
     sys.exit("bridge requires `websockets`. Install: pip install websockets")
+
+from bridge.attachment_http import handle_attachment_http
 
 logger = logging.getLogger("my-browser-bridge")
 
@@ -99,7 +104,7 @@ class Hub:
         try:
             async for raw in ws:
                 try:
-                    await self._relay(role, raw)
+                    await self._relay(ws, role, raw)
                 except Exception as exc:
                     logger.error("Relay error: %s", exc)
         except websockets.exceptions.ConnectionClosed:
@@ -108,7 +113,9 @@ class Hub:
             self._peers[role].discard(ws)
             logger.info("Peer disconnected: %s (%s)", ws.remote_address, role)
 
-    async def _relay(self, sender_role: str, raw: str) -> None:
+    async def _relay(
+        self, sender_ws: ServerConnection, sender_role: str, raw: str
+    ) -> None:
         """Forward a message from *sender_role* to the other side."""
         # Heartbeat frames are local to the sender↔bridge link (used by the
         # extension to keep its MV3 service worker alive). They must not be
@@ -120,11 +127,45 @@ class Hub:
         target_role = "agent" if sender_role == "ui" else "ui"
         targets = list(self._peers[target_role])
         if not targets:
-            logger.debug("No %s peer to relay to — dropping message", target_role)
+            # Without this, the extension waits until sendRequest() times out
+            # when Hermes (agent) is not connected — looks like a hung upload.
+            await _maybe_reply_no_peer(sender_ws, raw)
+            logger.warning(
+                "No %s peer to relay to — message not delivered (sender=%s)",
+                target_role,
+                sender_role,
+            )
             return
 
         coros = [t.send(raw) for t in targets]
         await asyncio.gather(*coros, return_exceptions=True)
+
+
+async def _maybe_reply_no_peer(sender_ws: ServerConnection, raw: str) -> None:
+    """If *raw* looks like a request expecting a response, tell the sender why."""
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return
+    if not isinstance(data, dict):
+        return
+    rid = data.get("id")
+    if not rid:
+        return
+    # Only `{id, method, params}` expects a matching `{id, result|error}`.
+    if "method" not in data:
+        return
+    method = data.get("method", "?")
+    hint = (
+        "No Hermes plugin peer on the bridge (role=agent missing). "
+        "The extension (role=ui) is connected, but attachment.put and other "
+        "bridge calls require Hermes to run with hermes-my-browser-extension "
+        f"loaded so the plugin opens the agent WebSocket. Request was: {method}."
+    )
+    try:
+        await sender_ws.send(json.dumps({"id": rid, "error": {"message": hint}}))
+    except Exception:
+        pass
 
 
 def _is_heartbeat(raw: str) -> bool:
@@ -141,23 +182,61 @@ def _is_heartbeat(raw: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-async def _main(port: int) -> None:
+async def _main(port: int, http_attach_port: int) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
     hub = Hub()
 
-    async with serve(hub.handle, "127.0.0.1", port):
-        logger.info("my-browser-bridge listening on ws://127.0.0.1:%d", port)
-        await asyncio.Future()  # run forever
+    http_server = None
+    http_task = None
+    if http_attach_port > 0:
+        http_server = await asyncio.start_server(
+            handle_attachment_http, "127.0.0.1", http_attach_port
+        )
+        http_task = asyncio.create_task(http_server.serve_forever())
+        logger.info(
+            "bridge HTTP on http://127.0.0.1:%d — POST /attach, "
+            "GET /hermes/model-catalog, GET /hermes/provider-models, "
+            "GET /hermes/provider-env-status, GET/POST /hermes/dotenv, "
+            "GET/POST /hermes/main-model",
+            http_attach_port,
+        )
+
+    try:
+        async with serve(hub.handle, "127.0.0.1", port):
+            logger.info("my-browser-bridge listening on ws://127.0.0.1:%d", port)
+            await asyncio.Future()  # run forever
+    finally:
+        if http_task is not None:
+            http_task.cancel()
+            try:
+                await http_task
+            except asyncio.CancelledError:
+                pass
+        if http_server is not None:
+            http_server.close()
+            await http_server.wait_closed()
 
 
 def main() -> None:
+    try:
+        from bridge.dotenv_local import apply_plugin_dotenv
+
+        apply_plugin_dotenv()
+    except Exception:
+        pass
     parser = argparse.ArgumentParser(description="my-browser-bridge WebSocket hub")
-    parser.add_argument("--port", type=int, default=9393, help="Listen port")
+    parser.add_argument("--port", type=int, default=9393, help="WebSocket listen port")
+    parser.add_argument(
+        "--http-attach-port",
+        type=int,
+        default=9394,
+        help="HTTP POST /attach port (0 = disable). Side panel uploads use this.",
+    )
     args = parser.parse_args()
-    asyncio.run(_main(args.port))
+    asyncio.run(_main(args.port, args.http_attach_port))
 
 
 if __name__ == "__main__":

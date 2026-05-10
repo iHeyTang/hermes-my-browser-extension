@@ -5,6 +5,12 @@
 
 export const BRIDGE_URL = "ws://127.0.0.1:9393";
 
+/**
+ * Side-panel file uploads hit this first (`POST /attach` raw body). Started by
+ * `python -m bridge.server` (default port 9394, env `MY_BROWSER_ATTACH_HTTP_PORT`).
+ */
+export const ATTACHMENT_HTTP_BASE = "http://127.0.0.1:9394";
+
 export const RECONNECT_MS = 3000;
 
 // MV3 SWs idle out after 30s of no activity. Since Chrome 116, WebSocket

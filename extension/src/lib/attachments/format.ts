@@ -40,21 +40,22 @@ export const INLINE_IMAGES_AS_DATA_URL = false;
 export function formatFileAttachmentsForPrompt(
   atts: FileAttachment[],
 ): string {
-  if (atts.length === 0) return "";
+  const ready = atts.filter((a) => a.path && !a.uploading);
+  if (ready.length === 0) return "";
   const intro =
-    atts.length === 1
+    ready.length === 1
       ? [
           "The user has attached the following file. Use your read_file /",
           "pdf / image / etc. tools to read it from the given path if you",
           "need its contents. If the question is unrelated, ignore it.",
         ]
       : [
-          `The user has attached ${atts.length} files. Use your read_file /`,
+          `The user has attached ${ready.length} files. Use your read_file /`,
           "pdf / image / etc. tools to read them from the given paths if you",
           "need their contents. Ignore any that are unrelated to the question.",
         ];
-  const blocks = atts.map((att, i) => {
-    const indexAttr = atts.length > 1 ? ` index="${i + 1}"` : "";
+  const blocks = ready.map((att, i) => {
+    const indexAttr = ready.length > 1 ? ` index="${i + 1}"` : "";
     const lines: string[] = [
       `<file-attachment${indexAttr}>`,
       `Name: ${att.name}`,

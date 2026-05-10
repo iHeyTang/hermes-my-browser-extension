@@ -10,9 +10,8 @@
  *     execute via the `HANDLERS` registry; we reply `{id, result|error}`.
  *   - Outbound *from us* (SW): `sendRequest(method, params)` allocates a
  *     fresh id, sends the request, and resolves a Promise once the matching
- *     `{id, result|error}` arrives. Used today by the side-panel attachment
- *     pipeline (`attachment.put` / `attachment.delete`) to push file bytes
- *     to Python so the agent can read them by path.
+ *     `{id, result|error}` arrives. Used for side-panel `attachment.delete`
+ *     / `attachment.deleteSession` (uploads use bridge HTTP `POST /attach`).
  *
  *   `handleCommand` demuxes on whether the frame carries `method`:
  *     - present  → inbound request, dispatch handler
@@ -255,8 +254,7 @@ function sendError(id: string, message: string) {
 // ---------------------------------------------------------------------------
 // Outbound: SW-initiated requests to the Python side.
 //
-// Used by the side-panel attachment pipeline: we hand Python the file bytes
-// (base64) and it replies with the on-disk path the agent should reference.
+// Used for attachment delete / session cleanup over the bridge.
 // Generic enough to host any future extension→Python flows.
 // ---------------------------------------------------------------------------
 

@@ -34,6 +34,10 @@ provides_tools:
   - my_browser_userscript_run
   # Chat side panel discovery
   - my_browser_chat_url
+  # Learn mode (record user demo → trace for RPA)
+  - my_browser_learn_start
+  - my_browser_learn_stop
+  - my_browser_learn_status
 hooks:
   - on_session_start
   - on_session_end

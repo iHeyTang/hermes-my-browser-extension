@@ -33,3 +33,6 @@ extension/out/
 # Old vanilla-JS extension stashed during the v0.3.0 Plasmo rewrite — kept on
 # disk for a release or two as a reference; not committed.
 extension-old/
+
+
+attachments/

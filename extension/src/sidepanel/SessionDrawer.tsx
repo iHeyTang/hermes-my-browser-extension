@@ -1,11 +1,4 @@
-import {
-  Check,
-  Pencil,
-  Plus,
-  Trash2,
-  X,
-  type LucideIcon,
-} from "lucide-react";
+import { Check, Pencil, Trash2, X, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~components/ui/button";
@@ -22,8 +15,6 @@ interface Props {
   onClose: () => void;
   /** Open the session as a tab and activate it. */
   onOpen: (id: string) => void;
-  /** Spawn a brand new session and open it as a tab. */
-  onCreate: () => void;
   onRename: (id: string, title: string) => void;
   /** Permanent delete: drops the session from history + closes its tab. */
   onDelete: (id: string) => void;
@@ -94,7 +85,6 @@ export function SessionDrawer({
   activeId,
   onClose,
   onOpen,
-  onCreate,
   onRename,
   onDelete,
 }: Props) {
@@ -126,28 +116,12 @@ export function SessionDrawer({
       <header className="flex items-center gap-2 border-b px-3 py-2">
         <h2 className="text-sm font-semibold">History</h2>
         <span className="text-xs text-muted-foreground">{visibleCount}</span>
-        <div className="ml-auto flex items-center gap-1">
-          <Button
-            size="sm"
-            onClick={() => {
-              onCreate();
-              onClose();
-            }}
-          >
-            <Plus className="mr-1" />
-            New
-          </Button>
+        <div className="ml-auto">
           <Button size="icon" variant="ghost" onClick={onClose} title="Close">
             <X />
           </Button>
         </div>
       </header>
-
-      <p className="border-b px-3 py-1.5 text-[11px] text-muted-foreground">
-        Click a session to open it as a tab. The trash button{" "}
-        <span className="font-medium">deletes permanently</span>; closing a
-        tab from the top bar keeps it here.
-      </p>
 
       <div className="flex-1 overflow-hidden">
         <ScrollArea className="h-full">
@@ -265,6 +239,10 @@ function SessionRow({
           value={editingValue}
           onChange={(e) => onEditingValueChange(e.target.value)}
           onKeyDown={(e) => {
+            const ne = e.nativeEvent;
+            if (ne.isComposing || e.key === "Process") {
+              return;
+            }
             if (e.key === "Enter") {
               e.preventDefault();
               onCommitEdit();

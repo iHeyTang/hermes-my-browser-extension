@@ -48,7 +48,16 @@ import {
 } from "./userscript/orchestrator";
 import { registerRuntimeBridge, getMenuFor } from "./userscript/runtime-bridge";
 import { listScripts } from "./userscript/store";
+import type { LearnTraceEvent } from "~lib/learn/types";
+
 import { readUpdateURL } from "./userscript/parser";
+import {
+  learnAppendEvent,
+  learnFinish,
+  learnStartTab,
+  learnStatus,
+  restoreLearnSession,
+} from "./learn-recorder";
 
 // ---------------------------------------------------------------------------
 // Wire side-effect listeners
@@ -100,6 +109,10 @@ async function bootstrap() {
 
   await reapplyAllRegistrations().catch((e) =>
     console.warn("[hermes-bridge] reapplyAllRegistrations failed:", e),
+  );
+
+  await restoreLearnSession().catch((e) =>
+    console.warn("[hermes-bridge] restoreLearnSession failed:", e),
   );
 
   if (state.desiredConnected) {
@@ -195,12 +208,26 @@ async function pollUserscriptUpdates() {
 // Popup / options ↔ background message channel
 // ---------------------------------------------------------------------------
 
-chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   (async () => {
     if (!request || typeof request !== "object") {
       sendResponse({ ok: false, error: "invalid request" });
       return;
     }
+
+    const typed = request as Record<string, unknown>;
+    if (typed.type === "learn.capture") {
+      const p = typed.payload;
+      if (p && typeof p === "object" && typeof (p as { type?: string }).type === "string") {
+        learnAppendEvent(
+          sender.tab?.id,
+          p as Omit<LearnTraceEvent, "t"> & { t?: number },
+        );
+      }
+      sendResponse({ ok: true });
+      return;
+    }
+
     const action = (request as { action?: string }).action;
     if (action === "connect") {
       await setDesiredConnected(true);
@@ -381,6 +408,60 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       return;
     }
 
+    if (action === "learn.start") {
+      try {
+        const r = request as Record<string, unknown>;
+        let tabId =
+          typeof r.tabId === "number" && Number.isFinite(r.tabId)
+            ? r.tabId
+            : undefined;
+        if (tabId === undefined) {
+          // Service workers have no reliable "currentWindow"; match the side
+          // panel's getActiveBrowserTab() (lastFocusedWindow + active).
+          const tabs = await chrome.tabs.query({
+            active: true,
+            lastFocusedWindow: true,
+          });
+          tabId = tabs[0]?.id;
+        }
+        if (tabId === undefined) {
+          sendResponse({ ok: false, error: "learn.start: no active tab" });
+          return;
+        }
+        await learnStartTab(tabId);
+        sendResponse({ ok: true, ...learnStatus() });
+      } catch (e) {
+        sendResponse({
+          ok: false,
+          error: String((e as Error)?.message || e),
+        });
+      }
+      return;
+    }
+
+    if (action === "learn.stop") {
+      try {
+        const st = learnStatus();
+        if (!st.active) {
+          sendResponse({ ok: true, recording: false, trace: null });
+          return;
+        }
+        const trace = await learnFinish();
+        sendResponse({ ok: true, recording: false, trace });
+      } catch (e) {
+        sendResponse({
+          ok: false,
+          error: String((e as Error)?.message || e),
+        });
+      }
+      return;
+    }
+
+    if (action === "learn.status") {
+      sendResponse({ ok: true, ...learnStatus() });
+      return;
+    }
+
     if (action === "status") {
       let agentAlive = false;
       let url: string | null = null;
@@ -429,60 +510,11 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     }
 
     // ---------------------------------------------------------------------
-    // Side-panel attachments → Python.
+    // Side-panel attachment cleanup → Python (WebSocket bridge).
     //
-    // The side panel reads a File / fetched Blob, base64-encodes its bytes
-    // and asks the SW to forward the payload through the bridge to Python,
-    // which writes it under ~/.hermes/plugins/.../attachments/<session>/
-    // and returns the absolute path. The path is what we then reference in
-    // the chat prompt — the agent uses its own read_file / pdf / image
-    // tools to actually read the bytes if it cares.
-    //
-    // Two actions:
-    //   - `attachment.put`    : upload bytes, get back { path, name, mime, size }
-    //   - `attachment.delete` : remove a previously-uploaded file (or a
-    //                           whole per-session directory) when the user
-    //                           drops a chip pre-send or deletes a chat.
-    //
-    // Bridge-required: both fail fast with a clear error if Hermes isn't
-    // connected. The side panel surfaces that as a tooltip on the chip.
+    // Uploads go directly from the side panel to the bridge HTTP server
+    // (`POST /attach`); only delete / deleteSession round-trip through here.
     // ---------------------------------------------------------------------
-
-    if (action === "attachment.put") {
-      try {
-        if (!isBridgeConnected()) {
-          sendResponse({
-            ok: false,
-            error:
-              "Not connected to Hermes. Click the bridge status pill in " +
-              "the side panel to connect, then enable file attachments.",
-          });
-          return;
-        }
-        const r = request as Record<string, unknown>;
-        const params = {
-          name: typeof r.name === "string" ? r.name : "file",
-          mime:
-            typeof r.mime === "string" && r.mime
-              ? r.mime
-              : "application/octet-stream",
-          data_b64: typeof r.data_b64 === "string" ? r.data_b64 : "",
-          session_id: typeof r.session_id === "string" ? r.session_id : "default",
-        };
-        // Generous timeout: 50 MB over a localhost WS is sub-second, but
-        // base64 decode + write on the Python side has surprised us before.
-        const result = await sendBridgeRequest<{
-          path: string;
-          name: string;
-          mime: string;
-          size: number;
-        }>("attachment.put", params, 60_000);
-        sendResponse({ ok: true, ...result });
-      } catch (e) {
-        sendResponse({ ok: false, error: String((e as Error)?.message || e) });
-      }
-      return;
-    }
 
     if (action === "attachment.delete") {
       try {

@@ -1,4 +1,12 @@
-import { FilePlus2, Globe, RefreshCw } from "lucide-react";
+import {
+  Bot,
+  Code2,
+  FilePlus2,
+  Globe,
+  Palette,
+  RadioTower,
+  RefreshCw,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import "~style.css";
@@ -14,14 +22,17 @@ import {
 import { HermesLogo } from "~components/hermes-logo";
 import { Input } from "~components/ui/input";
 import { Label } from "~components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "~components/ui/tabs";
+import { ScrollArea } from "~components/ui/scroll-area";
 
 import { useResolvedTheme } from "~lib/theme";
 import type { UserScript } from "~lib/types";
 
+import { HermesModelConfigTab } from "./HermesModelConfigTab";
 import { ScriptEditor } from "./ScriptEditor";
 import { ScriptList } from "./ScriptList";
-import { Settings } from "./Settings";
+import { OPTIONS_SHELL_HEADER_ROW } from "./optionsPageChrome";
+import { SettingsGateway } from "./SettingsGateway";
+import { SettingsPreferences } from "./SettingsPreferences";
 
 interface ListResp {
   ok: boolean;
@@ -34,8 +45,38 @@ interface DetailResp {
   error?: string;
 }
 
+/** Sidebar order: Preference → Scripts → Gateway → Models */
+const OPTIONS_MAIN_TABS = [
+  "preference",
+  "scripts",
+  "gateway",
+  "models",
+] as const;
+type MainTab = (typeof OPTIONS_MAIN_TABS)[number];
+
+const TAB_SET = new Set<string>(OPTIONS_MAIN_TABS);
+
+function mainTabFromLocation(): MainTab {
+  const raw =
+    typeof window !== "undefined"
+      ? window.location.hash.replace(/^#/, "").split("?")[0]
+      : "";
+  if (raw && TAB_SET.has(raw)) {
+    return raw as MainTab;
+  }
+  if (raw === "settings") {
+    return "preference";
+  }
+  if (raw === "hermes-model") {
+    return "models";
+  }
+  return "scripts";
+}
+
 export default function Options() {
   useResolvedTheme();
+
+  const [mainTab, setMainTab] = useState<MainTab>(() => mainTabFromLocation());
 
   const [scripts, setScripts] = useState<UserScript[]>([]);
   const [editing, setEditing] = useState<UserScript | null>(null);
@@ -55,6 +96,23 @@ export default function Options() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const onHash = () => setMainTab(mainTabFromLocation());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  function onMainTabChange(v: string) {
+    const next = TAB_SET.has(v) ? (v as MainTab) : "scripts";
+    setMainTab(next);
+    const base = window.location.pathname + window.location.search;
+    if (next === "scripts") {
+      window.history.replaceState(null, "", base);
+    } else {
+      window.history.replaceState(null, "", `${base}#${next}`);
+    }
+  }
 
   async function onToggle(id: string, enabled: boolean) {
     await chrome.runtime.sendMessage({
@@ -135,91 +193,196 @@ export default function Options() {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto max-w-4xl p-6">
-        <header className="mb-6 flex items-center gap-3">
-          <HermesLogo size={36} className="shrink-0" />
-          <h1 className="text-xl font-semibold tracking-tight">
-            Hermes Browser Extension — Options
-          </h1>
-          <span className="text-xs text-muted-foreground">v0.3.0</span>
-        </header>
+    <div className="flex h-screen min-h-0 w-full bg-background text-foreground">
+      <aside className="flex min-h-0 w-56 shrink-0 flex-col border-r border-border bg-muted/25">
+        <div
+          className={`${OPTIONS_SHELL_HEADER_ROW} gap-2.5 bg-muted/20 px-3`}
+        >
+          <HermesLogo size={32} className="shrink-0" />
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold leading-tight">
+              Hermes
+            </p>
+            <p className="text-[10px] text-muted-foreground">扩展控制台</p>
+          </div>
+        </div>
+        <ScrollArea className="min-h-0 flex-1">
+          <nav className="flex flex-col gap-0.5 p-2">
+            <Button
+              type="button"
+              variant={mainTab === "preference" ? "secondary" : "ghost"}
+              className="w-full justify-start gap-2 font-normal"
+              onClick={() => onMainTabChange("preference")}
+            >
+              <Palette className="h-4 w-4 shrink-0 opacity-70" />
+              Preference
+            </Button>
+            <Button
+              type="button"
+              variant={mainTab === "scripts" ? "secondary" : "ghost"}
+              className="w-full justify-start gap-2 font-normal"
+              onClick={() => onMainTabChange("scripts")}
+            >
+              <Code2 className="h-4 w-4 shrink-0 opacity-70" />
+              Userscripts
+            </Button>
+            <Button
+              type="button"
+              variant={mainTab === "gateway" ? "secondary" : "ghost"}
+              className="w-full justify-start gap-2 font-normal"
+              onClick={() => onMainTabChange("gateway")}
+            >
+              <RadioTower className="h-4 w-4 shrink-0 opacity-70" />
+              Gateway
+            </Button>
+            <Button
+              type="button"
+              variant={mainTab === "models" ? "secondary" : "ghost"}
+              className="w-full justify-start gap-2 font-normal"
+              onClick={() => onMainTabChange("models")}
+            >
+              <Bot className="h-4 w-4 shrink-0 opacity-70" />
+              Models
+            </Button>
+          </nav>
+        </ScrollArea>
+        <div className="border-t border-border px-3 py-2">
+          <p className="text-[10px] text-muted-foreground/80">v0.3.0</p>
+        </div>
+      </aside>
 
-        <Tabs defaultValue="scripts">
-          <TabsList>
-            <TabsTrigger value="scripts">Userscripts</TabsTrigger>
-            <TabsTrigger value="settings">Settings</TabsTrigger>
-          </TabsList>
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {mainTab === "models" ? (
+          <HermesModelConfigTab />
+        ) : (
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {mainTab === "scripts" ? (
+              <>
+                <header
+                  className={`${OPTIONS_SHELL_HEADER_ROW} bg-muted/20 px-4`}
+                >
+                  <div className="flex min-w-0 flex-col justify-center gap-0.5 leading-tight">
+                    <h2 className="text-sm font-semibold tracking-tight">
+                      Userscripts
+                    </h2>
+                    <p className="truncate text-[11px] text-muted-foreground">
+                      创建、安装与管理用户脚本
+                    </p>
+                  </div>
+                </header>
+                <ScrollArea className="min-h-0 flex-1">
+                  <div className="space-y-4 p-6">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button onClick={() => setCreating(true)} disabled={busy}>
+                        <FilePlus2 className="mr-1" />
+                        New script
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => setInstallOpen(true)}
+                        disabled={busy}
+                      >
+                        <Globe className="mr-1" />
+                        Install from URL
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        onClick={() => void refresh()}
+                        disabled={busy}
+                      >
+                        <RefreshCw className="mr-1" />
+                        Refresh
+                      </Button>
+                      {error && (
+                        <span className="text-xs text-destructive">{error}</span>
+                      )}
+                    </div>
 
-          <TabsContent value="scripts" className="mt-4 space-y-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button onClick={() => setCreating(true)} disabled={busy}>
-                <FilePlus2 className="mr-1" />
-                New script
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => setInstallOpen(true)}
-                disabled={busy}
-              >
-                <Globe className="mr-1" />
-                Install from URL
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => void refresh()}
-                disabled={busy}
-              >
-                <RefreshCw className="mr-1" />
-                Refresh
-              </Button>
-              {error && (
-                <span className="text-xs text-destructive">{error}</span>
-              )}
-            </div>
-
-            {editing ? (
-              <ScriptEditor
-                title={`Edit: ${editing.meta.name}`}
-                initialSource={editing.source}
-                onSave={onSaveEdit}
-                onCancel={() => setEditing(null)}
-                busy={busy}
-              />
-            ) : creating ? (
-              <ScriptEditor
-                title="New userscript"
-                initialSource=""
-                onSave={onCreateNew}
-                onCancel={() => setCreating(false)}
-                busy={busy}
-              />
+                    {editing ? (
+                      <ScriptEditor
+                        title={`Edit: ${editing.meta.name}`}
+                        initialSource={editing.source}
+                        onSave={onSaveEdit}
+                        onCancel={() => setEditing(null)}
+                        busy={busy}
+                      />
+                    ) : creating ? (
+                      <ScriptEditor
+                        title="New userscript"
+                        initialSource=""
+                        onSave={onCreateNew}
+                        onCancel={() => setCreating(false)}
+                        busy={busy}
+                      />
+                    ) : (
+                      <ScriptList
+                        scripts={scripts.map((s) => ({
+                          id: s.id,
+                          meta: {
+                            name: s.meta.name,
+                            version: s.meta.version,
+                            match: s.meta.match,
+                            runAt: s.meta.runAt,
+                          },
+                          enabled: s.enabled,
+                          updatedAt: s.updatedAt,
+                          lastError: s.lastError,
+                        }))}
+                        onEdit={(id) => void onEdit(id)}
+                        onRemove={(id) => void onRemove(id)}
+                        onToggle={(id, enabled) => void onToggle(id, enabled)}
+                      />
+                    )}
+                  </div>
+                </ScrollArea>
+              </>
+            ) : mainTab === "preference" ? (
+              <>
+                <header
+                  className={`${OPTIONS_SHELL_HEADER_ROW} bg-muted/20 px-4`}
+                >
+                  <div className="flex min-w-0 flex-col justify-center gap-0.5 leading-tight">
+                    <h2 className="text-sm font-semibold tracking-tight">
+                      Preference
+                    </h2>
+                    <p className="truncate text-[11px] text-muted-foreground">
+                      扩展界面与行为（与 Gateway / Models 无关）
+                    </p>
+                  </div>
+                </header>
+                <ScrollArea className="min-h-0 flex-1">
+                  <div className="p-6">
+                    <SettingsPreferences />
+                  </div>
+                </ScrollArea>
+              </>
             ) : (
-              <ScriptList
-                scripts={scripts.map((s) => ({
-                  id: s.id,
-                  meta: {
-                    name: s.meta.name,
-                    version: s.meta.version,
-                    match: s.meta.match,
-                    runAt: s.meta.runAt,
-                  },
-                  enabled: s.enabled,
-                  updatedAt: s.updatedAt,
-                  lastError: s.lastError,
-                }))}
-                onEdit={(id) => void onEdit(id)}
-                onRemove={(id) => void onRemove(id)}
-                onToggle={(id, enabled) => void onToggle(id, enabled)}
-              />
+              <>
+                <header
+                  className={`${OPTIONS_SHELL_HEADER_ROW} bg-muted/20 px-4`}
+                >
+                  <div className="flex min-w-0 flex-col justify-center gap-0.5 leading-tight">
+                    <h2 className="text-sm font-semibold tracking-tight">
+                      Gateway
+                    </h2>
+                    <p
+                      className="truncate text-[11px] text-muted-foreground"
+                      title="侧边栏对话 → hermes-agent-gateway（OpenAI 兼容 HTTP）"
+                    >
+                      侧边栏对话 → hermes-agent-gateway
+                    </p>
+                  </div>
+                </header>
+                <ScrollArea className="min-h-0 flex-1">
+                  <div className="p-6">
+                    <SettingsGateway />
+                  </div>
+                </ScrollArea>
+              </>
             )}
-          </TabsContent>
-
-          <TabsContent value="settings" className="mt-4">
-            <Settings />
-          </TabsContent>
-        </Tabs>
-      </div>
+          </div>
+        )}
+      </main>
 
       <Dialog open={installOpen} onOpenChange={setInstallOpen}>
         <DialogContent>

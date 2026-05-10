@@ -14,7 +14,8 @@
  *     This is where any new "side panel needs to tell the user
  *     something" entry should land — we deliberately don't sprinkle
  *     additional banner rows around the composer any more.
- *   - Action buttons (right): show agent window + open settings.
+ *   - Action buttons (right): show agent window (extension settings live
+ *     in the tab bar gear → Options).
  *
  * The bar is always visible — unlike the busy-only run-status cluster
  * inlined into the composer's bottom row, this one's job is steady-state
@@ -23,8 +24,8 @@
  * the SW restarts.
  */
 
-import { AppWindow, Settings as SettingsIcon, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { AppWindow, X } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { Button } from "~components/ui/button";
 import type { ConnectionState } from "~lib/types";
@@ -58,9 +59,17 @@ interface BridgeStatusBarProps {
    * messages region entirely.
    */
   messages?: BridgeStatusMessage[];
+  /**
+   * Optional content immediately after the connection pill (e.g. compact
+   * controls that should share the status row without a second banner).
+   */
+  afterConnection?: ReactNode;
 }
 
-export function BridgeStatusBar({ messages }: BridgeStatusBarProps = {}) {
+export function BridgeStatusBar({
+  messages,
+  afterConnection,
+}: BridgeStatusBarProps = {}) {
   const [resp, setResp] = useState<StatusResponse>({ state: "disconnected" });
   const [busy, setBusy] = useState(false);
 
@@ -173,6 +182,8 @@ export function BridgeStatusBar({ messages }: BridgeStatusBarProps = {}) {
         <span>{label}</span>
       </button>
 
+      {afterConnection}
+
       {/*
         Status messages live in a flex-1 strip between the connection
         pill and the action icons. `min-w-0` is critical so children
@@ -201,16 +212,6 @@ export function BridgeStatusBar({ messages }: BridgeStatusBarProps = {}) {
           aria-label="Show agent window"
         >
           <AppWindow />
-        </Button>
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-6 w-6 [&_svg]:size-3.5"
-          onClick={() => chrome.runtime.openOptionsPage()}
-          title="Settings · Userscripts"
-          aria-label="Open settings"
-        >
-          <SettingsIcon />
         </Button>
       </div>
     </div>
@@ -241,7 +242,7 @@ function StatusChip({ message }: { message: BridgeStatusMessage }) {
       )}
     >
       <span aria-hidden className="text-[11px] leading-none">
-        ⚠
+        {level === "info" ? "ⓘ" : "⚠"}
       </span>
       <span className="min-w-0 truncate">{preview}</span>
       {message.onDismiss && (

@@ -6,8 +6,8 @@
  * Storage model: **path-based, not inline**.
  *
  * The extension never embeds binary payloads in the chat completion request.
- * Instead, every attached file is uploaded through the bridge to Python,
- * which writes it under `~/.hermes/plugins/<plugin>/attachments/<session>/`
+ * Instead, every attached file is uploaded over HTTP to the bridge process
+ * (`POST /attach`), which writes it under `~/.hermes/plugins/<plugin>/attachments/<session>/`
  * and returns the absolute path. The chat prompt only references that path
  * via a `<file-attachment path="...">` system-message block. The agent uses
  * its own server-side tools (read_file / pdf-text / image / OCR / …) to
@@ -88,6 +88,11 @@ export interface FileAttachment extends AttachmentBase {
   fromPageContext?: boolean;
   /** Source URL when `fromPageContext` is true. */
   sourceUrl?: string;
+  /**
+   * True while bytes are being uploaded (`POST` to bridge `/attach`).
+   * Composer chip shows a spinner; `path` is unset until complete.
+   */
+  uploading?: boolean;
 }
 
 /**

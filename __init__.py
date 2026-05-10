@@ -38,6 +38,9 @@ from .tools import (
     MY_BROWSER_USERSCRIPT_SET_ENABLED_SCHEMA,
     MY_BROWSER_USERSCRIPT_RUN_SCHEMA,
     MY_BROWSER_CHAT_URL_SCHEMA,
+    MY_BROWSER_LEARN_START_SCHEMA,
+    MY_BROWSER_LEARN_STOP_SCHEMA,
+    MY_BROWSER_LEARN_STATUS_SCHEMA,
     _check_my_browser_available,
     _handle_my_browser_connect,
     _handle_my_browser_disconnect,
@@ -59,6 +62,9 @@ from .tools import (
     _handle_my_browser_userscript_set_enabled,
     _handle_my_browser_userscript_run,
     _handle_my_browser_chat_url,
+    _handle_my_browser_learn_start,
+    _handle_my_browser_learn_stop,
+    _handle_my_browser_learn_status,
     _on_session_start,
     _on_session_end,
 )
@@ -88,6 +94,9 @@ _TOOLS = (
     ("my_browser_userscript_run",         MY_BROWSER_USERSCRIPT_RUN_SCHEMA,         _handle_my_browser_userscript_run,         "🚀"),
     # Chat side panel discovery — added in v0.3.0
     ("my_browser_chat_url",               MY_BROWSER_CHAT_URL_SCHEMA,               _handle_my_browser_chat_url,               "💬"),
+    ("my_browser_learn_start",            MY_BROWSER_LEARN_START_SCHEMA,            _handle_my_browser_learn_start,            "🎓"),
+    ("my_browser_learn_stop",             MY_BROWSER_LEARN_STOP_SCHEMA,             _handle_my_browser_learn_stop,             "⏹"),
+    ("my_browser_learn_status",           MY_BROWSER_LEARN_STATUS_SCHEMA,           _handle_my_browser_learn_status,           "📊"),
 )
 
 # ---------------------------------------------------------------------------
@@ -103,9 +112,15 @@ def _get_bridge_port() -> int:
     return int(os.environ.get("MY_BROWSER_BRIDGE_PORT", "9393"))
 
 
-def _bridge_script() -> str:
-    """Return the absolute path to bridge/server.py."""
-    return str(Path(__file__).parent / "bridge" / "server.py")
+def _get_attach_http_port() -> int:
+    """HTTP POST /attach port (0 = disabled in bridge process)."""
+    import os
+    return int(os.environ.get("MY_BROWSER_ATTACH_HTTP_PORT", "9394"))
+
+
+def _bridge_pkg_root() -> Path:
+    """Directory that contains the `bridge/` package (this plugin root)."""
+    return Path(__file__).resolve().parent
 
 
 def _bridge_log_path() -> Path:
@@ -126,30 +141,54 @@ def _bridge_log_path() -> Path:
 
 def start_bridge() -> None:
     """Start the WebSocket bridge as a background subprocess."""
+    import os
+
     global _bridge_process
     if _bridge_process is not None and _bridge_process.poll() is None:
         return  # already running
 
-    script = _bridge_script()
-    if not Path(script).exists():
-        logger.warning("Bridge script not found at %s — skipping auto-start", script)
+    pkg_root = _bridge_pkg_root()
+    if not (pkg_root / "bridge" / "server.py").exists():
+        logger.warning("Bridge package not found under %s — skipping auto-start", pkg_root)
         return
 
     port = _get_bridge_port()
+    http_port = _get_attach_http_port()
     log_path = _bridge_log_path()
+    try:
+        from bridge.dotenv_local import apply_plugin_dotenv
+
+        apply_plugin_dotenv(base=pkg_root)
+    except Exception:
+        pass
     try:
         # Append to the log so successive Hermes restarts accumulate (truncate
         # the file manually if it gets too big).
         log_fp = open(log_path, "a", buffering=1)
-        log_fp.write(f"\n--- my-browser-bridge starting (port={port}) ---\n")
+        log_fp.write(
+            f"\n--- my-browser-bridge starting (ws={port}, http_attach={http_port}) ---\n"
+        )
         _bridge_process = subprocess.Popen(
-            [sys.executable, script, "--port", str(port)],
+            [
+                sys.executable,
+                "-m",
+                "bridge.server",
+                "--port",
+                str(port),
+                "--http-attach-port",
+                str(http_port),
+            ],
+            cwd=str(pkg_root),
+            env=os.environ.copy(),
             stdout=log_fp,
             stderr=subprocess.STDOUT,
         )
         logger.info(
-            "my-browser-bridge started (pid=%d, port=%d, log=%s)",
-            _bridge_process.pid, port, log_path,
+            "my-browser-bridge started (pid=%d, ws=%d, http_attach=%d, log=%s)",
+            _bridge_process.pid,
+            port,
+            http_port,
+            log_path,
         )
     except Exception as exc:
         logger.error("Failed to start my-browser-bridge: %s (log=%s)", exc, log_path)

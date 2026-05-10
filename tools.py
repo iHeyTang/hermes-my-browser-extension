@@ -375,6 +375,69 @@ MY_BROWSER_CHAT_URL_SCHEMA = {
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
+MY_BROWSER_LEARN_START_SCHEMA = {
+    "name": "my_browser_learn_start",
+    "description": (
+        "Start recording user actions (clicks, typing, form submit, navigations) "
+        "on a single Chrome tab for demonstration learning / RPA. "
+        "Use scope=last_focused to record the user's normal browser tab (the window "
+        "they last focused). Use scope=agent to record the dedicated agent tab. "
+        "The user may also start recording from the Hermes side panel."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "scope": {
+                "type": "string",
+                "enum": ["last_focused", "agent"],
+                "description": (
+                    "Which tab to attach: last_focused = active tab in the last "
+                    "focused browser window; agent = the agent window tab "
+                    "(requires my_browser_connect first)."
+                ),
+                "default": "last_focused",
+            },
+            "tab_id": {
+                "type": "integer",
+                "description": "Optional explicit Chrome tab id; overrides scope when valid.",
+            },
+        },
+        "required": [],
+    },
+}
+
+MY_BROWSER_LEARN_STOP_SCHEMA = {
+    "name": "my_browser_learn_stop",
+    "description": (
+        "Stop learn-mode recording and return the trace JSON (events with URLs, "
+        "selectors, values). After this tool returns, analyze the trace: summarize "
+        "the user's goal, choose strategy 'tools' (my_browser_* steps) vs "
+        "'userscript' (single Tampermonkey-style script), and produce an executable "
+        "artifact. Follow agent_instruction_zh in the result for the exact output shape."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+MY_BROWSER_LEARN_STATUS_SCHEMA = {
+    "name": "my_browser_learn_status",
+    "description": (
+        "Return whether learn-mode recording is active, the target tab id, "
+        "and how many events have been captured so far."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+_LEARN_TRACE_AGENT_INSTRUCTION_ZH = (
+    "请阅读附件中的 learn_trace JSON 文件，然后：\n"
+    "1. 用简短中文概括用户操作目的与步骤。\n"
+    "2. 选择执行策略 `tools`（逐步调用 my_browser_navigate / click / type / eval 等）"
+    "或 `userscript`（生成可安装的单文件用户脚本），说明理由。\n"
+    "3. 产出可自动化回放的内容：若选 tools，给出有序步骤（每步含建议参数）；"
+    "若选 userscript，给出完整脚本（含合适的 @match）。\n"
+    "请只输出一个 JSON 对象，字段：strategy（\"tools\"|\"userscript\"）、"
+    "rationale（string）、risks（string[]）、artifact（object 或 string，依策略而定）。"
+)
+
 
 # ---------------------------------------------------------------------------
 # Gating
@@ -989,27 +1052,32 @@ async def _handle_attachment_put(params: Dict[str, Any]) -> Dict[str, Any]:
     data_b64 = str(params.get("data_b64") or "")
     session_id = params.get("session_id")
 
-    try:
-        data = base64.b64decode(data_b64, validate=False)
-    except Exception as exc:
-        raise ValueError(f"invalid base64 payload: {exc}") from exc
-
-    if len(data) > MAX_ATTACHMENT_BYTES:
-        raise ValueError(
-            f"attachment too large: {len(data)} bytes > "
-            f"{MAX_ATTACHMENT_BYTES} bytes (50 MB cap)"
-        )
-
     session_dir = _attachment_session_dir(session_id if isinstance(session_id, str) else None)
     uid = secrets.token_hex(4)
     target = session_dir / f"{uid}_{name}"
-    target.write_bytes(data)
+
+    def _decode_write() -> int:
+        try:
+            data = base64.b64decode(data_b64, validate=False)
+        except Exception as exc:
+            raise ValueError(f"invalid base64 payload: {exc}") from exc
+        if len(data) > MAX_ATTACHMENT_BYTES:
+            raise ValueError(
+                f"attachment too large: {len(data)} bytes > "
+                f"{MAX_ATTACHMENT_BYTES} bytes (50 MB cap)"
+            )
+        target.write_bytes(data)
+        return len(data)
+
+    # Large base64 + disk write must not block the asyncio reader that pulls
+    # WebSocket frames; otherwise the extension hits sendRequest timeouts.
+    size = await asyncio.to_thread(_decode_write)
 
     return {
         "path": str(target),
         "name": name,
         "mime": mime,
-        "size": len(data),
+        "size": size,
     }
 
 
@@ -1372,6 +1440,70 @@ def _read_gateway_config() -> Dict[str, Any]:
         return yaml.safe_load(cfg_path.read_text()) or {}
     except Exception:
         return {}
+
+
+def _handle_my_browser_learn_start(args: dict, **kw: Any) -> str:
+    args = args or {}
+    scope = args.get("scope") or "last_focused"
+    if scope not in ("last_focused", "agent"):
+        scope = "last_focused"
+    params: Dict[str, Any] = {"scope": scope}
+    tid = args.get("tab_id")
+    if tid is not None:
+        try:
+            params["tab_id"] = int(tid)
+        except (TypeError, ValueError):
+            return tool_error("my_browser_learn_start: tab_id must be an integer")
+    resp = _send("learn_start", params, timeout=15.0)
+    ok, body = _unwrap(resp)
+    if not ok:
+        return tool_error(f"my_browser_learn_start: {body}")
+    return tool_result({
+        "success": True,
+        "recording": bool(body.get("active")),
+        "tab_id": body.get("tabId"),
+        "event_count": body.get("eventCount", 0),
+        "message": "Recording started. User demonstrates on the target tab; call my_browser_learn_stop when done.",
+    })
+
+
+def _handle_my_browser_learn_stop(args: dict, **kw: Any) -> str:
+    resp = _send("learn_stop", {}, timeout=15.0)
+    ok, body = _unwrap(resp)
+    if not ok:
+        return tool_error(f"my_browser_learn_stop: {body}")
+    trace = body.get("trace")
+    if trace is None:
+        return tool_result({
+            "success": True,
+            "recording": False,
+            "trace": None,
+            "message": body.get("message") or "Not recording.",
+        })
+    return tool_result({
+        "success": True,
+        "recording": False,
+        "trace": trace,
+        "agent_instruction_zh": _LEARN_TRACE_AGENT_INSTRUCTION_ZH,
+        "message": (
+            "Trace returned. Analyze it and emit one JSON object "
+            "(strategy, rationale, risks, artifact) per agent_instruction_zh."
+        ),
+    })
+
+
+def _handle_my_browser_learn_status(args: dict, **kw: Any) -> str:
+    resp = _send("learn_status", {}, timeout=5.0)
+    ok, body = _unwrap(resp)
+    if not ok:
+        return tool_error(f"my_browser_learn_status: {body}")
+    return tool_result({
+        "success": True,
+        "recording": bool(body.get("active")),
+        "tab_id": body.get("tabId"),
+        "started_at": body.get("startedAt"),
+        "event_count": body.get("eventCount", 0),
+    })
 
 
 def _handle_my_browser_chat_url(args: dict, **kw: Any) -> str:

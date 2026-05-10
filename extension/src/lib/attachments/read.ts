@@ -2,24 +2,17 @@
  * Read user-supplied `File` / fetched `Blob` objects into composer-ready
  * `FileAttachment`s.
  *
- * The pipeline does three things, in order:
+ * The pipeline does these in order:
  *
- *   1. Enforce a size cap up front so a stray multi-GB drop doesn't lock
- *      up the panel or blow up the bridge frame. The cap mirrors the
- *      Python-side `MAX_ATTACHMENT_BYTES`.
+ *   1. Size cap (matches Python `MAX_ATTACHMENT_BYTES`).
  *
- *   2. Generate a small *preview* tailored to the kind so the chip can
- *      render something useful without re-reading the file:
- *        - image  → 256px-edge thumbnail (JPEG / PNG via <canvas>)
- *        - text   → first ~500 chars decoded as UTF-8
- *        - pdf / binary → no preview, just the file icon
+ *   2. Upload the *full* bytes: side panel → `fetch(ATTACHMENT_HTTP_BASE/attach)`
+ *      (raw POST body) to the bridge process — same on-disk layout as the
+ *      Python `attachment.put` handler; there is no WebSocket / sendMessage
+ *      upload path in the extension.
  *
- *   3. Upload the *full* bytes through the SW (`attachment.put`) so Python
- *      writes them under `~/.hermes/plugins/<plugin>/attachments/<session>/`
- *      and returns the absolute path. That path is what we keep on the
- *      `FileAttachment` and reference in the chat prompt — the agent uses
- *      its own server-side tools to read the file's actual content if it
- *      needs to.
+ *   3. Optional preview (thumbnail / text snippet) *after* upload, with
+ *      timeouts so it cannot block clearing the "uploading" chip.
  *
  * Errors are returned as plain strings so the caller can surface them
  * inline without juggling exception types — none of the failure modes
@@ -32,6 +25,7 @@
  * every type.
  */
 
+import { ATTACHMENT_HTTP_BASE } from "~background/config";
 import { shortId } from "~lib/utils";
 
 import type {
@@ -51,6 +45,28 @@ const TEXT_PREVIEW_CHARS = 500;
 /** Longest edge for the chip-side image thumbnail. */
 const THUMB_LONG_EDGE = 256;
 const IMAGE_REENCODE_QUALITY = 0.85;
+
+/** Previews are best-effort; never block the bridge upload on them. */
+const PREVIEW_BUDGET_MS = 20_000;
+/** Upper bound for `fetch(/attach)` so the composer cannot spin forever. */
+const PUT_MESSAGE_BUDGET_MS = 130_000;
+
+const PREVIEW_TIMED_OUT = Symbol("previewTimedOut");
+
+async function withBudget<T>(
+  p: Promise<T>,
+  ms: number,
+): Promise<T | typeof PREVIEW_TIMED_OUT> {
+  let tid: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof PREVIEW_TIMED_OUT>((resolve) => {
+    tid = setTimeout(() => resolve(PREVIEW_TIMED_OUT), ms);
+  });
+  try {
+    return await Promise.race([p as Promise<T>, timeout]);
+  } finally {
+    if (tid !== undefined) clearTimeout(tid);
+  }
+}
 
 const IMAGE_MIMES = new Set([
   "image/png",
@@ -167,6 +183,12 @@ export interface AttachmentReadOptions {
    * anything stable) if you don't have a session id yet.
    */
   sessionId: string;
+  /**
+   * When the UI already showed a pending row (spinner), pass the same id so
+   * the completed attachment replaces that row. If we mint a fresh id here
+   * instead, a missed state merge leaves the chip stuck on "uploading".
+   */
+  uiId?: string;
   /** Set when the attachment was auto-created from the user's current tab. */
   fromPageContext?: boolean;
   /** Original URL for `fromPageContext` attachments — surfaced in the prompt. */
@@ -221,27 +243,13 @@ export async function readBlobAsAttachment(args: {
 
   const kind = classify(name, mime);
 
-  // Build the preview side-channel. Failures here are non-fatal — we still
-  // upload the bytes and produce an attachment, just without a preview.
-  let thumbDataUrl: string | undefined;
-  let textPreview: string | undefined;
-  try {
-    if (kind === "image") {
-      thumbDataUrl = await buildImageThumbnail(blob, mime || "image/png");
-    } else if (kind === "text") {
-      textPreview = await buildTextPreview(blob);
-    }
-  } catch (e) {
-    console.warn(
-      "[attachments] preview generation failed:",
-      (e as Error)?.message || e,
-    );
-  }
-
-  // Upload bytes via SW → bridge → Python → returns the absolute path.
+  // Upload first. We used to build image/text previews *before* this step;
+  // `buildImageThumbnail` / `decode` can hang or run for minutes on some
+  // inputs (huge PNGs, exotic codecs), which left the composer stuck on
+  // "uploading" because the bridge was never contacted.
   let path: string;
   try {
-    path = await uploadBlobViaBridge(blob, name, mime, options.sessionId);
+    path = await uploadBlobViaAttachHttp(blob, name, mime, options.sessionId);
   } catch (e) {
     return {
       ok: false,
@@ -250,13 +258,43 @@ export async function readBlobAsAttachment(args: {
     };
   }
 
+  // Preview side-channel — failures and slow paths are non-fatal.
+  let thumbDataUrl: string | undefined;
+  let textPreview: string | undefined;
+  try {
+    if (kind === "image") {
+      const r = await withBudget(
+        buildImageThumbnail(blob, mime || "image/png"),
+        PREVIEW_BUDGET_MS,
+      );
+      if (r === PREVIEW_TIMED_OUT) {
+        console.warn("[attachments] thumbnail timed out; continuing without preview");
+      } else {
+        thumbDataUrl = r;
+      }
+    } else if (kind === "text") {
+      const r = await withBudget(buildTextPreview(blob), PREVIEW_BUDGET_MS);
+      if (r === PREVIEW_TIMED_OUT) {
+        console.warn("[attachments] text preview timed out; continuing without preview");
+      } else {
+        textPreview = r;
+      }
+    }
+  } catch (e) {
+    console.warn(
+      "[attachments] preview generation failed:",
+      (e as Error)?.message || e,
+    );
+  }
+
   const att: FileAttachment = {
-    uiId: shortId("att"),
+    uiId: options.uiId ?? shortId("att"),
     name,
     mime: mime || "application/octet-stream",
     size,
     kind,
     path,
+    uploading: false,
     ...(thumbDataUrl ? { thumbDataUrl } : {}),
     ...(textPreview ? { textPreview } : {}),
     ...(options.fromPageContext ? { fromPageContext: true } : {}),
@@ -365,29 +403,38 @@ interface UploadResponse {
 }
 
 /**
- * Push the blob's bytes through the SW (`attachment.put` action) and
- * resolve with the absolute on-disk path Python wrote them to.
+ * POST raw bytes to bridge HTTP (`/attach`) — sole upload path for composer files.
  */
-async function uploadBlobViaBridge(
+async function uploadBlobViaAttachHttp(
   blob: Blob,
   name: string,
   mime: string,
   sessionId: string,
 ): Promise<string> {
-  const data_b64 = await blobToBase64(blob);
-  const resp = (await chrome.runtime.sendMessage({
-    action: "attachment.put",
-    name,
-    mime: mime || "application/octet-stream",
-    data_b64,
+  const ctype = mime || blob.type || "application/octet-stream";
+  const q = new URLSearchParams({
     session_id: sessionId || "default",
-  })) as UploadResponse | undefined;
-
-  if (!resp || !resp.ok || !resp.path) {
-    const reason = resp?.error || "Unknown error from bridge";
-    throw new Error(reason);
+    name,
+    mime: ctype,
+  });
+  const url = `${ATTACHMENT_HTTP_BASE.replace(/\/$/, "")}/attach?${q.toString()}`;
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), PUT_MESSAGE_BUDGET_MS);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      body: blob,
+      headers: { "Content-Type": ctype },
+      signal: ctrl.signal,
+    });
+    const j = (await res.json()) as UploadResponse;
+    if (!res.ok || !j.ok || !j.path) {
+      throw new Error(j.error || `${res.status} ${res.statusText}`);
+    }
+    return j.path;
+  } finally {
+    clearTimeout(tid);
   }
-  return resp.path;
 }
 
 /** Strip directory components and trim, falling back to "file" when empty. */
