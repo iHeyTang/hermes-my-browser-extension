@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-my-browser-extension"
+version = "0.3.0"
+description = "Browser extension plugin for Hermes Agent — dedicated agent window, userscripts, side-panel chat."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "iHeyTang" }]
+dependencies = [
+    "websockets>=12",
+]
+
+[project.urls]
+Repository = "https://github.com/iHeyTang/hermes-my-browser-extension"
+
+# Official Hermes plugin discovery — see:
+# https://hermes-agent.nousresearch.com/docs/guides/build-a-hermes-plugin
+[project.entry-points."hermes_agent.plugins"]
+hermes-my-browser-extension = "hermes_my_browser_extension"
+
+[tool.setuptools]
+package-dir = { "hermes_my_browser_extension" = "." }
+packages = ["hermes_my_browser_extension", "hermes_my_browser_extension.bridge"]
+include-package-data = true

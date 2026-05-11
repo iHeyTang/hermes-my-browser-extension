@@ -139,6 +139,22 @@ def _bridge_log_path() -> Path:
     return log_dir / "my-browser-bridge.log"
 
 
+def _bridge_run_module() -> str:
+    """Module path for `python -m …` bridge subprocess.
+
+    Prefer the setuptools package name when installed (pip / editable).
+    Fall back to legacy ``bridge.server`` when only the repo dir is on PYTHONPATH.
+    """
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("hermes_my_browser_extension.bridge.server") is not None:
+            return "hermes_my_browser_extension.bridge.server"
+    except Exception:
+        pass
+    return "bridge.server"
+
+
 def start_bridge() -> None:
     """Start the WebSocket bridge as a background subprocess."""
     import os
@@ -156,7 +172,7 @@ def start_bridge() -> None:
     http_port = _get_attach_http_port()
     log_path = _bridge_log_path()
     try:
-        from bridge.dotenv_local import apply_plugin_dotenv
+        from .bridge.dotenv_local import apply_plugin_dotenv
 
         apply_plugin_dotenv(base=pkg_root)
     except Exception:
@@ -172,7 +188,7 @@ def start_bridge() -> None:
             [
                 sys.executable,
                 "-m",
-                "bridge.server",
+                _bridge_run_module(),
                 "--port",
                 str(port),
                 "--http-attach-port",

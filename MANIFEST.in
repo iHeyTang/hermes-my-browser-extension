@@ -1,0 +1,12 @@
+include plugin.yaml
+include after-install.md
+include DEVELOPER.md
+graft scripts
+graft extension
+graft docs
+prune extension/node_modules
+prune extension/build
+prune extension/.plasmo
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude .DS_Store

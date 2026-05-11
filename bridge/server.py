@@ -18,9 +18,9 @@ Protocol:
   Bridge → Hermes Plugin:
     (response forwarded verbatim)
 
-Usage (from this repo root, so `bridge` is importable):
-  python -m bridge.server
-  python -m bridge.server --port 9393 --http-attach-port 9394
+Usage (installed package):
+  python -m hermes_my_browser_extension.bridge.server
+  python -m hermes_my_browser_extension.bridge.server --port 9393 --http-attach-port 9394
 
 Side-panel uploads use HTTP POST http://127.0.0.1:<http-attach-port>/attach
 (raw body). WebSocket on --port is unchanged for agent ↔ extension.
@@ -39,9 +39,13 @@ try:
     import websockets
     from websockets.asyncio.server import ServerConnection, serve
 except ImportError:
-    sys.exit("bridge requires `websockets`. Install: pip install websockets")
+    sys.exit(
+        "bridge requires `websockets`. Install the plugin package in Hermes's venv "
+        "(pulls deps): pip install -e ~/.hermes/plugins/hermes-my-browser-extension "
+        "or pip install hermes-my-browser-extension"
+    )
 
-from bridge.attachment_http import handle_attachment_http
+from .attachment_http import handle_attachment_http
 
 logger = logging.getLogger("my-browser-bridge")
 
@@ -222,7 +226,7 @@ async def _main(port: int, http_attach_port: int) -> None:
 
 def main() -> None:
     try:
-        from bridge.dotenv_local import apply_plugin_dotenv
+        from .dotenv_local import apply_plugin_dotenv
 
         apply_plugin_dotenv()
     except Exception:

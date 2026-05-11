@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
-from bridge.hermes_agent_model import (
+from .hermes_agent_model import (
     AUXILIARY_SLOTS,
     read_auxiliary_models,
     read_config_provider_keys,
@@ -43,18 +43,18 @@ from bridge.hermes_agent_model import (
     write_auxiliary_slot,
     write_main_model,
 )
-from bridge.hermes_canonical_providers import try_load_canonical_providers
-from bridge.hermes_model_catalog import (
+from .hermes_canonical_providers import try_load_canonical_providers
+from .hermes_model_catalog import (
     get_model_catalog_manifest,
     merge_provider_ids,
 )
-from bridge.hermes_provider_env import (
+from .hermes_provider_env import (
     collect_provider_env_var_map,
     provider_env_bridge_status,
     provider_slugs_with_credentials_set,
 )
-from bridge.hermes_provider_models import build_provider_models_response
-from bridge.dotenv_local import (
+from .hermes_provider_models import build_provider_models_response
+from .dotenv_local import (
     get_dotenv_values_for_keys,
     is_valid_env_key,
     merge_dotenv_file_and_apply,
