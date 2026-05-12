@@ -102,7 +102,7 @@ hermes gateway restart
 
 1. 执行或确认已执行：`hermes gateway restart`
 2. 点击扩展图标打开侧边栏，在状态条上点 **● 离线** 直到变为 **● 在线**
-3. 在 Hermes 里试：`@my_browser_connect`，再 `@my_browser_navigate url=https://example.com`，再 `@my_browser_get_text selector=h1`
+3. 在 Hermes 里试：扩展侧栏先 **Online**，用 **Open** 选 Auto / Agent / New tab / Same tab，再 `@my_browser_navigate url=https://example.com`，再 `@my_browser_get_text selector=h1`（Auto 时可用 `open_in` 精细指定每次导航；侧栏选非 Auto 则整轮工具都固定在该表面）
 
 若侧栏对话报 401/403，优先检查 `API_SERVER_KEY` 是否与扩展 Settings 一致、以及 `API_SERVER_CORS_ORIGINS=*` 是否已写入并重启 gateway。
 

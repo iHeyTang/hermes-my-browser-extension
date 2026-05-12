@@ -19,12 +19,11 @@ import { OPTIONS_SHELL_HEADER_ROW } from "./optionsPageChrome";
 import {
   AUXILIARY_SLOT_LABELS,
   AUXILIARY_SLOT_NAMES,
-  getHermesAgentMainModel,
   getHermesAuxiliaryModels,
-  getHermesDotenvValues,
+  getHermesMainProviderSettings,
   getHermesModelCatalog,
   getHermesProviderModels,
-  patchHermesDotenv,
+  saveHermesMainProviderSettings,
   setHermesAgentMainModel,
   setHermesAuxiliarySlot,
   type AuxiliarySlot,
@@ -181,8 +180,12 @@ export function HermesModelConfigTab() {
     pricing_loaded?: boolean;
   } | null>(null);
   const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
+  /** Env var names allowed for the current provider (from bridge / Hermes profile). */
+  const [credentialKeys, setCredentialKeys] = useState<string[]>([]);
   const [keysLoading, setKeysLoading] = useState(false);
   const [keysError, setKeysError] = useState<string | null>(null);
+  /** After initial combined GET, skip one redundant credentials refetch for the same provider. */
+  const skipNextCredentialsFetch = useRef(false);
 
   // ── Model-Config panel saving state ───────────────────────────────────
   const [mcSaving, setMcSaving] = useState(false);
@@ -197,15 +200,6 @@ export function HermesModelConfigTab() {
     }
     return m;
   }, [catalog?.canonical_providers]);
-
-  const keyNamesForProvider = useMemo(() => {
-    const p = hProvider.trim();
-    if (!p || p === "auto") return [];
-    const pe = catalog?.provider_env_vars?.[p];
-    if (pe?.length) return [...pe];
-    if (p === "custom") return ["CUSTOM_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
-    return [];
-  }, [catalog?.provider_env_vars, hProvider]);
 
   const orderedSidebarProviders = useMemo(() => {
     const catalogIds =
@@ -356,10 +350,11 @@ export function HermesModelConfigTab() {
     void loadProviderModels(false);
   }, [mainLoading, hProvider, loadProviderModels]);
 
-  // ── Load API keys when provider changes ───────────────────────────────
+  // ── Load API keys when provider changes (bridge resolves allowed keys) ─
   useEffect(() => {
-    const names = keyNamesForProvider;
-    if (names.length === 0) {
+    const p = hProvider.trim();
+    if (!p || p === "auto") {
+      setCredentialKeys([]);
       setKeyDrafts({});
       setKeysLoading(false);
       setKeysError(null);
@@ -368,20 +363,28 @@ export function HermesModelConfigTab() {
     let cancelled = false;
     setKeysLoading(true);
     setKeysError(null);
-    void getHermesDotenvValues(names).then((r) => {
+    if (skipNextCredentialsFetch.current) {
+      skipNextCredentialsFetch.current = false;
+      setKeysLoading(false);
+      return;
+    }
+    void getHermesMainProviderSettings(p).then((r) => {
       if (cancelled) return;
       setKeysLoading(false);
       if (!r.ok) {
         setKeysError(r.error || "无法读取密钥");
+        setCredentialKeys([]);
         setKeyDrafts({});
         return;
       }
-      setKeyDrafts({ ...(r.values ?? {}) });
+      const c = r.credentials;
+      setCredentialKeys([...(c?.keys ?? [])]);
+      setKeyDrafts({ ...(c?.values ?? {}) });
     });
     return () => {
       cancelled = true;
     };
-  }, [keyNamesForProvider.join("|"), hProvider]);
+  }, [hProvider]);
 
   // ── Initial load ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -390,7 +393,7 @@ export function HermesModelConfigTab() {
       setMainError(null);
       try {
         const [main, auxResp, cat] = await Promise.all([
-          getHermesAgentMainModel(),
+          getHermesMainProviderSettings(),
           getHermesAuxiliaryModels(),
           getHermesModelCatalog(false),
         ]);
@@ -406,6 +409,12 @@ export function HermesModelConfigTab() {
           setDiskBaseUrl(bu);
           setHBaseUrl(bu);
           setMainError(typeof main.error === "string" && main.error ? main.error : null);
+          const c = main.credentials;
+          if (c && (c.keys?.length ?? 0) > 0) {
+            setCredentialKeys([...(c.keys ?? [])]);
+            setKeyDrafts({ ...(c.values ?? {}) });
+            skipNextCredentialsFetch.current = true;
+          }
         } else {
           setMainError(main.error || "无法读取 Hermes 配置");
         }
@@ -430,46 +439,46 @@ export function HermesModelConfigTab() {
       const c = await getHermesModelCatalog(true);
       if (c.ok) setCatalog(c);
       await loadProviderModels(true);
-      if (keyNamesForProvider.length > 0) {
-        const dv = await getHermesDotenvValues(keyNamesForProvider);
-        if (dv.ok) setKeyDrafts({ ...(dv.values ?? {}) });
+      const p = hProvider.trim();
+      if (p && p !== "auto") {
+        const dv = await getHermesMainProviderSettings(p);
+        if (dv.ok && dv.credentials) {
+          setCredentialKeys([...(dv.credentials.keys ?? [])]);
+          setKeyDrafts({ ...(dv.credentials.values ?? {}) });
+        }
       }
     } finally {
       setCatalogRefreshing(false);
     }
   }
 
-  // ── Provider panel: save API keys ─────────────────────────────────────
-  async function persistProviderKeys(): Promise<boolean> {
-    const names = keyNamesForProvider;
-    if (names.length === 0) return true;
-    setKeysError(null);
-    const updates: Record<string, string> = {};
-    for (const k of names) updates[k] = keyDrafts[k] ?? "";
-    const r = await patchHermesDotenv(updates);
-    if (!r.ok) {
-      setKeysError(r.error || "保存密钥失败");
-      return false;
-    }
-    void loadProviderModels(true);
-    return true;
-  }
-
+  // ── Provider panel: save model + base URL + credentials (single bridge call) ─
   async function saveProviderSettings() {
     setHSaving(true);
     setHError(null);
     setKeysError(null);
     try {
-      if (!(await persistProviderKeys())) return;
-      const r = await setHermesAgentMainModel({
+      const body: {
+        provider: string;
+        model: string;
+        base_url: string | null;
+        credentials?: Record<string, string>;
+      } = {
         provider: hProvider.trim() || "auto",
         model: hModel.trim(),
         base_url: hBaseUrl.trim() || null,
-      });
+      };
+      if (credentialKeys.length > 0) {
+        const credentials: Record<string, string> = {};
+        for (const k of credentialKeys) credentials[k] = keyDrafts[k] ?? "";
+        body.credentials = credentials;
+      }
+      const r = await saveHermesMainProviderSettings(body);
       if (!r.ok) {
         setHError(r.error || "保存失败");
         return;
       }
+      void loadProviderModels(true);
       const dp = (r.provider || hProvider || "auto").trim() || "auto";
       const dm = (r.model ?? hModel).trim();
       const dbu = (r.base_url ?? hBaseUrl).trim();
@@ -702,7 +711,7 @@ export function HermesModelConfigTab() {
                 hSaving={hSaving}
                 hSaved={hSaved}
                 hError={hError}
-                keyNamesForProvider={keyNamesForProvider}
+                credentialKeys={credentialKeys}
                 keyDrafts={keyDrafts}
                 keysLoading={keysLoading}
                 keysError={keysError}
@@ -1132,7 +1141,7 @@ interface ProviderPanelProps {
   hSaving: boolean;
   hSaved: boolean;
   hError: string | null;
-  keyNamesForProvider: string[];
+  credentialKeys: string[];
   keyDrafts: Record<string, string>;
   keysLoading: boolean;
   keysError: string | null;
@@ -1158,7 +1167,7 @@ function ProviderPanel({
   hSaving,
   hSaved,
   hError,
-  keyNamesForProvider,
+  credentialKeys,
   keyDrafts,
   keysLoading,
   keysError,
@@ -1216,7 +1225,7 @@ function ProviderPanel({
             </p>
           )}
 
-          {hProvider !== "auto" && keyNamesForProvider.length > 0 && (
+          {hProvider !== "auto" && credentialKeys.length > 0 && (
             <div className="space-y-3">
               <Label className="text-sm text-foreground">API 密钥</Label>
               {keysError && (
@@ -1229,7 +1238,7 @@ function ProviderPanel({
                 </p>
               ) : (
                 <div className="space-y-3">
-                  {keyNamesForProvider.map((name) => (
+                  {credentialKeys.map((name) => (
                     <div key={name} className="space-y-1.5">
                       <Label
                         htmlFor={`key-${name}`}

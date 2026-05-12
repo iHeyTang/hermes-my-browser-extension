@@ -1,8 +1,5 @@
 """
-Hermes model catalog — same remote manifest and disk cache as `hermes model` / TUI.
-
-Source: https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
-Fallback: ~/.hermes/cache/model_catalog.json (written by Hermes CLI when online).
+Hermes model catalog from official docs JSON + local disk cache fallback.
 """
 
 from __future__ import annotations
@@ -14,23 +11,18 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .hermes_core import hermes_home
+
 logger = logging.getLogger("my-browser-bridge")
 
-DEFAULT_CATALOG_URL = (
-    "https://hermes-agent.nousresearch.com/docs/api/model-catalog.json"
-)
+DEFAULT_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/model-catalog.json"
 BRIDGE_USER_AGENT = "hermes-my-browser-extension-bridge/1.0"
 SUPPORTED_SCHEMA_VERSION = 1
 DEFAULT_FETCH_TIMEOUT = 15.0
 
 
 def _disk_cache_path() -> Path:
-    try:
-        from hermes_constants import get_hermes_home
-
-        return get_hermes_home() / "cache" / "model_catalog.json"
-    except Exception:
-        return Path.home() / ".hermes" / "cache" / "model_catalog.json"
+    return hermes_home() / "cache" / "model_catalog.json"
 
 
 def _validate_manifest(data: Any) -> bool:
@@ -60,10 +52,7 @@ def _fetch_url(url: str, timeout: float) -> Optional[Dict[str, Any]]:
     try:
         req = urllib.request.Request(
             url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": BRIDGE_USER_AGENT,
-            },
+            headers={"Accept": "application/json", "User-Agent": BRIDGE_USER_AGENT},
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
@@ -94,13 +83,9 @@ def _read_disk_cache() -> Optional[Dict[str, Any]]:
     return data
 
 
-def get_model_catalog_manifest(*, force_refresh: bool = False) -> Tuple[Optional[Dict[str, Any]], str]:
-    """
-    Return (manifest_or_none, source_tag).
-
-    - force_refresh: pull remote first (explicit user refresh), then disk.
-    - otherwise: use Hermes disk cache if present (fast), else remote.
-    """
+def get_model_catalog_manifest(
+    *, force_refresh: bool = False
+) -> Tuple[Optional[Dict[str, Any]], str]:
     if force_refresh:
         fetched = _fetch_url(DEFAULT_CATALOG_URL, DEFAULT_FETCH_TIMEOUT)
         if fetched is not None:
@@ -126,14 +111,7 @@ def merge_provider_ids(
     config_provider_keys: List[str],
     canonical_slugs: Optional[List[str]] = None,
 ) -> List[str]:
-    """Provider id order for dropdowns.
-
-    When *canonical_slugs* is set (from ``hermes_cli.models.CANONICAL_PROVIDERS``),
-    order follows ``hermes model`` TUI: auto → canonical → manifest extras →
-    config extras → custom.
-
-    Otherwise fall back to auto, custom, manifest keys, config keys (legacy).
-    """
+    """Provider dropdown ordering."""
     seen: set[str] = set()
     out: List[str] = []
 
@@ -168,3 +146,4 @@ def merge_provider_ids(
         if isinstance(k, str):
             add(k)
     return out
+

@@ -23,12 +23,43 @@ export async function saveIndex(index: SessionMeta[]): Promise<void> {
   await chrome.storage.local.set({ [SESSION_KEYS.index]: index });
 }
 
+/**
+ * UI-only fields that must NOT survive to disk: rendered markdown that may
+ * change format across builds (`streamVerbose`). Raw inputs that feed that
+ * markdown (`hermesToolProgress`, `assistantTimeline`) ARE persisted —
+ * they have stable schemas (toolCallId / status / etc.) and let the panel
+ * still show the agent's tool trace and interleaved text/tool order on
+ * reopen.
+ *
+ * `streaming` is intentionally NOT stripped any more: the agent loop now
+ * runs in the service worker, so when the panel reopens mid-stream the
+ * spinner should appear immediately (before the SW snapshot arrives) and
+ * the `handleSnapshot` reconciliation will either keep it (still
+ * streaming), clear it with the accumulated text (finished), or mark
+ * it `[interrupted]` (SW was killed). Without persisting the flag we'd
+ * flicker spinnerless on reopen.
+ *
+ * `uiId` could in principle be regenerated on load, but we keep it stable
+ * across reloads so React keys + per-bubble state (e.g. an expanded chip)
+ * don't reset every time the panel rehydrates.
+ */
+const VOLATILE_MESSAGE_FIELDS = ["streamVerbose"] as const;
+
+function stripVolatile(msg: SessionMessage): SessionMessage {
+  const out: Record<string, unknown> = { ...msg };
+  for (const k of VOLATILE_MESSAGE_FIELDS) delete out[k];
+  return out as unknown as SessionMessage;
+}
+
 export async function loadMessages(id: string): Promise<SessionMessage[]> {
   if (!id) return [];
   const key = SESSION_KEYS.message(id);
   const r = await chrome.storage.local.get([key]);
   const v = r[key];
-  return Array.isArray(v) ? (v as SessionMessage[]) : [];
+  if (!Array.isArray(v)) return [];
+  // Sanitize anything older builds may have persisted (verbose markdown
+  // with `### Tools` headings, stale streaming flags, etc.).
+  return (v as SessionMessage[]).map(stripVolatile);
 }
 
 export async function saveMessages(
@@ -37,7 +68,7 @@ export async function saveMessages(
 ): Promise<void> {
   if (!id) return;
   const key = SESSION_KEYS.message(id);
-  const trimmed = messages.slice(-PER_SESSION_MESSAGE_LIMIT);
+  const trimmed = messages.slice(-PER_SESSION_MESSAGE_LIMIT).map(stripVolatile);
   await chrome.storage.local.set({ [key]: trimmed });
 }
 

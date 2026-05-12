@@ -9,6 +9,30 @@
 
 import type { ChatMessage } from "~lib/types";
 
+/** Merged state for one streamed function tool call (OpenAI-style deltas). */
+export interface StreamedToolCall {
+  index: number;
+  id?: string;
+  name: string;
+  arguments: string;
+}
+
+/**
+ * One `event: hermes.tool.progress` frame from the Hermes gateway. The gateway
+ * emits these as a separate SSE channel from `delta.content` (see
+ * `gateway/platforms/api_server.py:_emit`) so frontends can show a live tool
+ * trace without polluting the assistant's final answer. `status` is
+ * `"running"` on tool start and `"completed"` on finish — pair them by
+ * `toolCallId`.
+ */
+export interface HermesToolProgress {
+  tool: string;
+  toolCallId: string;
+  status: "running" | "completed";
+  label?: string;
+  emoji?: string;
+}
+
 export interface HermesClientOptions {
   apiBase: string;
   apiKey?: string;
@@ -20,7 +44,17 @@ export interface HermesClientOptions {
 
 export interface StreamHandlers {
   onChunk?: (delta: string) => void;
-  onToolCall?: (call: { name: string; arguments: string }) => void;
+  /** Full merged tool-call rows after each SSE chunk that carries tool deltas. */
+  onToolCallsState?: (calls: StreamedToolCall[]) => void;
+  /** Model reasoning / thinking tokens when the gateway forwards them. */
+  onReasoningChunk?: (delta: string) => void;
+  /**
+   * Hermes-specific tool-progress events from the gateway's
+   * `event: hermes.tool.progress` SSE channel. Use this for live trace UI
+   * — `delta.tool_calls` on the standard chat-completions channel is empty
+   * in Hermes's agent mode.
+   */
+  onHermesToolProgress?: (event: HermesToolProgress) => void;
   onSession?: (sessionId: string) => void;
 }
 
@@ -92,6 +126,37 @@ export async function streamChat(
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let assembled = "";
+  const toolCallsAcc = new Map<
+    number,
+    { index: number; id?: string; name: string; arguments: string }
+  >();
+
+  function mergeToolCallDeltas(
+    toolDeltas: unknown,
+  ): StreamedToolCall[] | null {
+    if (!Array.isArray(toolDeltas) || toolDeltas.length === 0) return null;
+    for (const raw of toolDeltas) {
+      if (!raw || typeof raw !== "object") continue;
+      const tc = raw as Record<string, unknown>;
+      const idx = typeof tc.index === "number" ? tc.index : 0;
+      const prev = toolCallsAcc.get(idx) ?? {
+        index: idx,
+        name: "",
+        arguments: "",
+      };
+      if (typeof tc.id === "string" && tc.id) prev.id = tc.id;
+      const fn = tc.function as Record<string, unknown> | undefined;
+      if (fn) {
+        if (typeof fn.name === "string" && fn.name) prev.name = fn.name;
+        if (typeof fn.arguments === "string" && fn.arguments)
+          prev.arguments += fn.arguments;
+      }
+      toolCallsAcc.set(idx, prev);
+    }
+    return Array.from(toolCallsAcc.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([, v]) => ({ ...v }));
+  }
 
   while (true) {
     const { done, value } = await reader.read();
@@ -100,30 +165,58 @@ export async function streamChat(
 
     let idx = buffer.indexOf("\n\n");
     while (idx !== -1) {
-      const event = buffer.slice(0, idx);
+      const frame = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 2);
-      const text = parseEvent(event);
-      if (text != null) {
-        if (text === "[DONE]") return assembled;
-        try {
-          const obj = JSON.parse(text);
-          const delta = obj?.choices?.[0]?.delta;
-          if (delta?.content) {
-            assembled += delta.content;
-            handlers.onChunk?.(delta.content);
+      const parsed = parseEvent(frame);
+      if (parsed != null) {
+        const { event, data } = parsed;
+        if (data === "[DONE]") return assembled;
+        if (event === "hermes.tool.progress") {
+          try {
+            const obj = JSON.parse(data);
+            if (
+              obj &&
+              typeof obj === "object" &&
+              typeof obj.tool === "string" &&
+              typeof obj.toolCallId === "string" &&
+              (obj.status === "running" || obj.status === "completed")
+            ) {
+              handlers.onHermesToolProgress?.({
+                tool: obj.tool,
+                toolCallId: obj.toolCallId,
+                status: obj.status,
+                label: typeof obj.label === "string" ? obj.label : undefined,
+                emoji: typeof obj.emoji === "string" ? obj.emoji : undefined,
+              });
+            }
+          } catch {
+            // Non-JSON progress payload; ignore.
           }
-          if (delta?.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              if (tc?.function?.name && handlers.onToolCall) {
-                handlers.onToolCall({
-                  name: tc.function.name,
-                  arguments: tc.function.arguments || "",
-                });
+        } else {
+          try {
+            const obj = JSON.parse(data);
+            const delta = obj?.choices?.[0]?.delta;
+            if (delta?.content) {
+              const c = delta.content;
+              const piece = typeof c === "string" ? c : "";
+              if (piece) {
+                assembled += piece;
+                handlers.onChunk?.(piece);
               }
             }
+            const rc = delta?.reasoning_content;
+            if (typeof rc === "string" && rc.length > 0) {
+              handlers.onReasoningChunk?.(rc);
+            }
+            if (delta?.tool_calls) {
+              const merged = mergeToolCallDeltas(delta.tool_calls);
+              if (merged && merged.length > 0) {
+                handlers.onToolCallsState?.(merged);
+              }
+            }
+          } catch {
+            // Non-JSON chunk; ignore.
           }
-        } catch {
-          // Non-JSON chunk; ignore.
         }
       }
       idx = buffer.indexOf("\n\n");
@@ -132,17 +225,23 @@ export async function streamChat(
   return assembled;
 }
 
-function parseEvent(block: string): string | null {
-  // SSE frame is one or more `data: ...` lines separated by '\n', possibly
-  // with leading `event:` / `id:` lines we ignore.
+function parseEvent(
+  block: string,
+): { event: string; data: string } | null {
+  // SSE frame: one or more `data: ...` lines (concatenated with '\n'), plus
+  // an optional `event: <name>` line. `id:` is ignored. Default event name
+  // for streams without an explicit `event:` is `"message"` per the SSE spec.
+  let event = "message";
   let payload = "";
   for (const line of block.split("\n")) {
     if (line.startsWith("data:")) {
       payload += line.slice(5).trimStart() + "\n";
+    } else if (line.startsWith("event:")) {
+      event = line.slice(6).trim();
     }
   }
   payload = payload.replace(/\n$/, "");
-  return payload.length ? payload : null;
+  return payload.length ? { event, data: payload } : null;
 }
 
 async function safeText(res: Response): Promise<string> {

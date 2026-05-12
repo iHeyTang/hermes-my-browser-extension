@@ -15,7 +15,7 @@ from typing import Dict, List
 
 logger = logging.getLogger("my-browser-bridge")
 
-_PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+_PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
 
 _ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -130,3 +130,4 @@ def apply_plugin_dotenv(base: Path | None = None) -> None:
             n += 1
     if n:
         logger.info("Applied %d key(s) from %s (only where unset)", n, path)
+

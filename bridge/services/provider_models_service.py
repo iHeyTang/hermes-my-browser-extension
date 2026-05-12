@@ -1,12 +1,9 @@
 """
-Per-provider model lists — same as ``hermes_cli.models.curated_models_for_provider``.
+Per-provider model lists — composes upstream curated lists, manifest entries
+and live pricing into a unified response.
 
-Optional description overlay from the docs manifest when ids overlap.
-
-When Hermes CLI is available, live per-model pricing from
-``get_pricing_for_provider`` (OpenRouter-compatible ``/v1/models``) is merged into
-each entry's ``metadata`` as ``input_price_per_mtok`` / ``output_price_per_mtok``
-(USD per 1M tokens); manifest values for those keys take precedence.
+This is a pure composition service: it has no direct external I/O of its own
+and depends on ``adapters.hermes_core`` for any upstream calls.
 """
 
 from __future__ import annotations
@@ -14,10 +11,15 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..adapters.hermes_core import (
+    curated_models_for_provider,
+    get_pricing_for_provider,
+    hermes_cli_models_available,
+    normalize_provider,
+)
+
 logger = logging.getLogger("my-browser-bridge")
 
-# Optional catalog / manifest fields surfaced to the extension UI as
-# ``entry["metadata"]`` (flat dict, JSON-safe scalars and short lists only).
 _TOP_LEVEL_MODEL_META_KEYS = (
     "context_window",
     "max_context_tokens",
@@ -144,7 +146,6 @@ def _models_from_manifest_block(block: Optional[Dict[str, Any]]) -> List[Dict[st
 
 
 def _price_per_million_from_openrouter_token_price(s: Any) -> Optional[float]:
-    """Convert OpenRouter-style per-token USD string to $/1M tokens."""
     if s is None:
         return None
     t = str(s).strip()
@@ -158,10 +159,8 @@ def _price_per_million_from_openrouter_token_price(s: Any) -> Optional[float]:
 
 
 def _merge_live_pricing_into_entry(
-    entry: Dict[str, Any],
-    pricing_map: Dict[str, Dict[str, str]],
+    entry: Dict[str, Any], pricing_map: Dict[str, Dict[str, str]]
 ) -> None:
-    """Fold ``get_pricing_for_provider`` rows into ``entry[\"metadata\"]`` (manifest wins)."""
     mid = entry.get("id")
     if not isinstance(mid, str) or not mid.strip():
         return
@@ -182,8 +181,7 @@ def _merge_live_pricing_into_entry(
 
 
 def _apply_pricing_to_models(
-    models: List[Dict[str, Any]],
-    pricing_map: Dict[str, Dict[str, str]],
+    models: List[Dict[str, Any]], pricing_map: Dict[str, Dict[str, str]]
 ) -> None:
     for e in models:
         _merge_live_pricing_into_entry(e, pricing_map)
@@ -192,14 +190,8 @@ def _apply_pricing_to_models(
 def _fetch_pricing_map(
     provider_raw: str, *, force_refresh: bool
 ) -> Dict[str, Dict[str, str]]:
-    try:
-        from hermes_cli.models import get_pricing_for_provider, normalize_provider
-
-        norm = normalize_provider(provider_raw)
-        return get_pricing_for_provider(norm, force_refresh=force_refresh)
-    except Exception as exc:
-        logger.info("get_pricing_for_provider(%r) failed: %s", provider_raw, exc)
-        return {}
+    norm = normalize_provider(provider_raw)
+    return get_pricing_for_provider(norm, force_refresh=force_refresh)
 
 
 def build_provider_models_response(
@@ -219,19 +211,11 @@ def build_provider_models_response(
             "pricing_loaded": False,
         }
 
-    normalized = raw
-    cli_tuples: List[Tuple[str, str]] = []
-    cli_loaded = False
-    try:
-        from hermes_cli.models import curated_models_for_provider, normalize_provider
-
-        normalized = normalize_provider(raw)
-        cli_loaded = True
-        cli_tuples = curated_models_for_provider(
-            normalized, force_refresh=force_refresh
-        )
-    except Exception as exc:
-        logger.info("hermes_cli models for provider %r failed: %s", raw, exc)
+    cli_loaded = hermes_cli_models_available()
+    normalized = normalize_provider(raw)
+    cli_tuples: List[Tuple[str, str]] = curated_models_for_provider(
+        normalized, force_refresh=force_refresh
+    )
 
     pricing_map = _fetch_pricing_map(raw, force_refresh=force_refresh)
     pricing_loaded = bool(pricing_map)

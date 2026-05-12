@@ -35,6 +35,8 @@ import logging
 import sys
 from typing import Any, Dict, Set
 
+from aiohttp import web
+
 try:
     import websockets
     from websockets.asyncio.server import ServerConnection, serve
@@ -45,7 +47,7 @@ except ImportError:
         "or pip install hermes-my-browser-extension"
     )
 
-from .attachment_http import handle_attachment_http
+from .http_app import build_http_app
 
 logger = logging.getLogger("my-browser-bridge")
 
@@ -193,18 +195,18 @@ async def _main(port: int, http_attach_port: int) -> None:
     )
     hub = Hub()
 
-    http_server = None
-    http_task = None
+    http_runner: web.AppRunner | None = None
     if http_attach_port > 0:
-        http_server = await asyncio.start_server(
-            handle_attachment_http, "127.0.0.1", http_attach_port
-        )
-        http_task = asyncio.create_task(http_server.serve_forever())
+        app = build_http_app()
+        http_runner = web.AppRunner(app)
+        await http_runner.setup()
+        site = web.TCPSite(http_runner, "127.0.0.1", http_attach_port)
+        await site.start()
         logger.info(
             "bridge HTTP on http://127.0.0.1:%d — POST /attach, "
             "GET /hermes/model-catalog, GET /hermes/provider-models, "
-            "GET /hermes/provider-env-status, GET/POST /hermes/dotenv, "
-            "GET/POST /hermes/main-model",
+            "GET/POST /hermes/main-provider-settings, GET/POST /hermes/main-model, "
+            "GET/POST /hermes/auxiliary-models",
             http_attach_port,
         )
 
@@ -213,20 +215,13 @@ async def _main(port: int, http_attach_port: int) -> None:
             logger.info("my-browser-bridge listening on ws://127.0.0.1:%d", port)
             await asyncio.Future()  # run forever
     finally:
-        if http_task is not None:
-            http_task.cancel()
-            try:
-                await http_task
-            except asyncio.CancelledError:
-                pass
-        if http_server is not None:
-            http_server.close()
-            await http_server.wait_closed()
+        if http_runner is not None:
+            await http_runner.cleanup()
 
 
 def main() -> None:
     try:
-        from .dotenv_local import apply_plugin_dotenv
+        from .adapters.dotenv_local import apply_plugin_dotenv
 
         apply_plugin_dotenv()
     except Exception:

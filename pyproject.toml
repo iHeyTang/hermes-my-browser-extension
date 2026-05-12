@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "iHeyTang" }]
 dependencies = [
+    "aiohttp>=3.10",
     "websockets>=12",
 ]
 
@@ -24,5 +25,11 @@ hermes-my-browser-extension = "hermes_my_browser_extension"
 
 [tool.setuptools]
 package-dir = { "hermes_my_browser_extension" = "." }
-packages = ["hermes_my_browser_extension", "hermes_my_browser_extension.bridge"]
+packages = [
+    "hermes_my_browser_extension",
+    "hermes_my_browser_extension.bridge",
+    "hermes_my_browser_extension.bridge.adapters",
+    "hermes_my_browser_extension.bridge.routes",
+    "hermes_my_browser_extension.bridge.services",
+]
 include-package-data = true

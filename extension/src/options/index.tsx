@@ -1,11 +1,13 @@
 import {
   Bot,
+  BrainCircuit,
   Code2,
   FilePlus2,
   Globe,
   Palette,
   RadioTower,
   RefreshCw,
+  Sparkles,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
@@ -32,7 +34,9 @@ import { ScriptEditor } from "./ScriptEditor";
 import { ScriptList } from "./ScriptList";
 import { OPTIONS_SHELL_HEADER_ROW } from "./optionsPageChrome";
 import { SettingsGateway } from "./SettingsGateway";
+import { SettingsMemory } from "./SettingsMemory";
 import { SettingsPreferences } from "./SettingsPreferences";
+import { SettingsSkills } from "./SettingsSkills";
 
 interface ListResp {
   ok: boolean;
@@ -45,12 +49,14 @@ interface DetailResp {
   error?: string;
 }
 
-/** Sidebar order: Preference → Scripts → Gateway → Models */
+/** Sidebar order: Preference → Scripts → Gateway → Models → Memory → Skills */
 const OPTIONS_MAIN_TABS = [
   "preference",
   "scripts",
   "gateway",
   "models",
+  "memory",
+  "skills",
 ] as const;
 type MainTab = (typeof OPTIONS_MAIN_TABS)[number];
 
@@ -244,6 +250,24 @@ export default function Options() {
               <Bot className="h-4 w-4 shrink-0 opacity-70" />
               Models
             </Button>
+            <Button
+              type="button"
+              variant={mainTab === "memory" ? "secondary" : "ghost"}
+              className="w-full justify-start gap-2 font-normal"
+              onClick={() => onMainTabChange("memory")}
+            >
+              <BrainCircuit className="h-4 w-4 shrink-0 opacity-70" />
+              Memory
+            </Button>
+            <Button
+              type="button"
+              variant={mainTab === "skills" ? "secondary" : "ghost"}
+              className="w-full justify-start gap-2 font-normal"
+              onClick={() => onMainTabChange("skills")}
+            >
+              <Sparkles className="h-4 w-4 shrink-0 opacity-70" />
+              Skills
+            </Button>
           </nav>
         </ScrollArea>
         <div className="border-t border-border px-3 py-2">
@@ -254,6 +278,10 @@ export default function Options() {
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         {mainTab === "models" ? (
           <HermesModelConfigTab />
+        ) : mainTab === "memory" ? (
+          <SettingsMemory />
+        ) : mainTab === "skills" ? (
+          <SettingsSkills />
         ) : (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {mainTab === "scripts" ? (

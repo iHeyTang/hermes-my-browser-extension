@@ -13,6 +13,7 @@ import {
   Paperclip,
   Pin,
   Plus,
+  Sparkles,
   X,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -22,7 +23,9 @@ import "~style.css";
 
 import { Button } from "~components/ui/button";
 import { HermesLogo } from "~components/hermes-logo";
+import { Label } from "~components/ui/label";
 import { ScrollArea } from "~components/ui/scroll-area";
+import { Switch } from "~components/ui/switch";
 import { Textarea } from "~components/ui/textarea";
 
 import {
@@ -46,7 +49,16 @@ import type {
   AttachmentKind,
 } from "~lib/attachments/types";
 import type { AttachmentReadResult } from "~lib/attachments/read";
-import { HermesHttpError, streamChat } from "~lib/chat/hermes-client";
+import type {
+  HermesToolProgress,
+  StreamedToolCall,
+} from "~lib/chat/hermes-client";
+import {
+  CHAT_PORT_NAME,
+  type BgToClientMessage,
+  type ChatRuntimeState,
+  type StreamEvent,
+} from "../background/chat/types";
 import {
   capturePageContext,
   formatPageContextsForPrompt,
@@ -60,11 +72,11 @@ import {
 } from "~lib/page-context/use-active-tab";
 import { useSessions } from "~lib/sessions/use-sessions";
 import { useResolvedTheme } from "~lib/theme";
-import type { ChatMessage, RunTarget } from "~lib/types";
+import type { ChatMessage, NavigateOpenPolicy } from "~lib/types";
 import { cn, shortId } from "~lib/utils";
 
 import { BridgeStatusBar } from "./BridgeStatusBar";
-import { RunModeToggle } from "./RunModeToggle";
+import { NavigateOpenPolicyToggle } from "./NavigateOpenPolicyToggle";
 import { SessionDrawer } from "./SessionDrawer";
 import { TabBar } from "./TabBar";
 
@@ -90,12 +102,35 @@ const SETTINGS_KEYS = {
   apiBase: "settings.chat.apiBase",
   apiKey: "settings.chat.apiKey",
   model: "settings.chat.model",
-  pageMode: "settings.sidepanel.pageMode",
-  // Sticky default for the run-mode toggle. The override (one-shot
-  // change for the next send) lives in component state only — by
-  // design, persisting it would defeat the "resets after send" promise.
-  runModeDefault: "settings.sidepanel.runModeDefault",
+  /** When true, assistant bubbles show streamed tool-call + reasoning deltas. */
+  showStreamDetails: "settings.sidepanel.showStreamDetails",
+  /** Where navigate opens + (when not Auto) where all browser tools run. */
+  navigateOpenPolicy: "settings.sidepanel.navigateOpenPolicy",
 };
+
+/** Push Open policy into `runTarget` when the user chose a concrete surface. */
+async function applyOpenPolicyToRunTarget(
+  policy: NavigateOpenPolicy,
+): Promise<void> {
+  if (policy === "auto") return;
+  if (policy === "agent") {
+    await chrome.runtime.sendMessage({ action: "runTarget.set", target: "agent" });
+    return;
+  }
+  const win = await chrome.windows.getCurrent();
+  const wid = win.id;
+  if (wid === undefined) return;
+  const [activeUserTab] = await chrome.tabs.query({
+    active: true,
+    windowId: wid,
+  });
+  await chrome.runtime.sendMessage({
+    action: "runTarget.set",
+    target: "user",
+    userTabId: activeUserTab?.id ?? null,
+    userWindowId: wid,
+  });
+}
 
 /** Composer input grows with text until this height, then scrolls internally. */
 const COMPOSER_TEXTAREA_MAX_PX = 200;
@@ -126,14 +161,29 @@ interface UiMessage extends ChatMessage {
    * — i.e. the last page the agent navigated to. Surfaced as a small
    * "Open in my browser →" chip on the assistant bubble so the user
    * can teleport over after a "go look it up" delegation. Only
-   * populated for turns that ran in agent or mirror mode (user-mode
-   * turns already happened in the user's tab; offering to "open" is
-   * redundant). Stored as plain strings so the chip survives panel
-   * reloads and history navigation.
+   * populated when the service worker's `runTarget` is still the agent
+   * surface at end of turn (user-only turns skip the chip). Stored as
+   * plain strings so the chip survives panel reloads and history navigation.
    */
   agentFinalUrl?: string;
   agentFinalTitle?: string;
+  /** Streamed reasoning trace (markdown) for this assistant turn. */
+  streamVerbose?: string;
+  /** Live tool-progress events from the gateway, rendered as chips. */
+  hermesToolProgress?: HermesToolProgress[];
+  /**
+   * Per-event timeline preserving the real interleave of model text and
+   * tool calls as they streamed in. Without this the side panel reduces
+   * the turn to "all chips on top, all text on bottom", which hides the
+   * fact that the agent often spoke between tool calls. Each item carries
+   * a stable `id` so React keys are stable across rehydration.
+   */
+  assistantTimeline?: AssistantTimelineItem[];
 }
+
+type AssistantTimelineItem =
+  | { kind: "text"; id: string; text: string }
+  | { kind: "tool"; id: string; toolCallId: string };
 
 /**
  * In-memory record of a page the user has explicitly pinned to the next
@@ -152,9 +202,8 @@ interface PendingChatTurn {
   queueId: string;
   text: string;
   attachments: Attachment[];
-  pinnedPagesSnapshot: PinnedPage[];
-  pageModeSnapshot: boolean;
-  runModeSnapshot: RunTarget;
+  attachedPagesSnapshot: PinnedPage[];
+  navigateOpenPolicySnapshot: NavigateOpenPolicy;
 }
 
 function previewPendingTurn(t: PendingChatTurn): string {
@@ -192,22 +241,25 @@ export default function SidePanel() {
   // Persisted across panel reloads so toggling "include current page"
   // survives the SW restarts that happen whenever the side panel is
   // closed and re-opened. We default to `true` so a fresh install
-  // immediately attaches the user's current tab as context — that's
-  // the most common intent for a side-panel chat.
-  const [pageMode, setPageMode] = useState(true);
-  // Where the agent's browser-control tool calls land. "agent" — the
-  // dedicated background window — is the safe default. The toggle is
-  // sticky, matching the existing Page toggle's pattern: a pick is a
-  // pick, and the user re-flips it if they want a one-off. We chose
-  // sticky-only over a separate "next send only" override because
-  // (a) it removes a UI mode (no override-dot to explain),
-  // (b) it matches every other persistent toggle in this side panel,
-  // (c) anyone running the same kind of task repeatedly (e.g., always
-  //     in their own tab) gets the right behaviour for free without
-  //     re-flipping every send.
-  // If the one-shot use case becomes common we can layer a "this turn
-  // only" affordance on top later — easier than removing one.
-  const [runMode, setRunMode] = useState<RunTarget>("agent");
+  /**
+   * Open: Auto / Agent / New tab / Same tab — single control for where browser
+   * tools run. Non-Auto pins `runTarget` in the service worker; Auto leaves
+   * `runTarget` to `my_browser_navigate` + model `open_in` (defaulting to the
+   * agent window when still ambiguous). Persisted in chrome.storage.local.
+   */
+  const [navigateOpenPolicy, setNavigateOpenPolicy] =
+    useState<NavigateOpenPolicy>("auto");
+  /** Show streamed tool-call + reasoning blocks above assistant markdown. */
+  const [showStreamDetails, setShowStreamDetails] = useState(false);
+  const showStreamDetailsRef = useRef(false);
+  /**
+   * Guards the `showStreamDetails` write-back so it can't clobber the stored
+   * value before the initial chrome.storage load resolves. Without this, the
+   * effect runs at mount with `false`, races the async load, and persists
+   * `false` on top of a user's `true`, making the toggle "forget" itself
+   * every time the side panel reopens.
+   */
+  const showStreamDetailsLoadedRef = useRef(false);
   // Pinned pages live alongside the live current-tab attachment. Each is
   // a frozen snapshot taken at pin time so the user can keep referencing
   // a page even after they navigate away or close its tab. Reset on
@@ -233,7 +285,36 @@ export default function SidePanel() {
   /** Composer textarea: grows with content up to max, then scrolls inside. */
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const { tab: activeTab, refresh: refreshActiveTab } = useActiveTab();
-  const abortRef = useRef<AbortController | null>(null);
+  // Long-lived pub/sub port to the SW chat engine. The agent loop runs over
+  // there now; the panel only posts user input and renders broadcasts.
+  const portRef = useRef<chrome.runtime.Port | null>(null);
+  /**
+   * Verbose-state accumulator for the currently active in-flight stream.
+   * Mirrors the per-turn closure the old inline `streamChat` used, lifted to
+   * component scope so port events (which fire outside any particular
+   * `runChatTurn` invocation) can find it. Reset on activeId change and
+   * rebuilt wholesale from the SW snapshot on (re)subscribe.
+   */
+  const verboseStateRef = useRef<{
+    assistantUiId: string;
+    reasoning: string;
+    tools: StreamedToolCall[];
+    hermesOrder: string[];
+    hermesById: Map<string, HermesToolProgress>;
+    timeline: AssistantTimelineItem[];
+  } | null>(null);
+  const verboseFlushRafRef = useRef<number | null>(null);
+  /**
+   * Promise plumbing so `runChatTurn` can `await` a stream that runs in the
+   * service worker. Resolved by the terminal port event for this sessionId;
+   * left empty when the panel reopens to an already-running stream (no local
+   * `runChatTurn` is waiting on it in that case).
+   */
+  const pendingTurnRef = useRef<{
+    sessionId: string;
+    resolve: () => void;
+    reject: (e: Error) => void;
+  } | null>(null);
   /** FIFO: user turns composed while `busy`; shown above the composer and drained after each stream. */
   const [pendingQueue, setPendingQueue] = useState<PendingChatTurn[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -288,6 +369,457 @@ export default function SidePanel() {
       cancelStreamChunkFlush();
     };
   }, []);
+
+  function appendTextToVerboseTimeline(delta: string): void {
+    const v = verboseStateRef.current;
+    if (!v) return;
+    const last = v.timeline[v.timeline.length - 1];
+    if (last && last.kind === "text") {
+      last.text += delta;
+    } else {
+      v.timeline.push({ kind: "text", id: shortId("tl"), text: delta });
+    }
+  }
+
+  function appendToolToVerboseTimeline(toolCallId: string): void {
+    const v = verboseStateRef.current;
+    if (!v) return;
+    const seen = v.timeline.some(
+      (it) => it.kind === "tool" && it.toolCallId === toolCallId,
+    );
+    if (seen) return;
+    v.timeline.push({ kind: "tool", id: shortId("tl"), toolCallId });
+  }
+
+  function cancelVerboseFlush(): void {
+    if (verboseFlushRafRef.current != null) {
+      cancelAnimationFrame(verboseFlushRafRef.current);
+      verboseFlushRafRef.current = null;
+    }
+  }
+
+  function applyVerboseToAssistant(): void {
+    const v = verboseStateRef.current;
+    if (!v) return;
+    const parts: string[] = [];
+    const rs = v.reasoning.trimEnd();
+    if (rs) parts.push(rs);
+    const named = v.tools.filter((t) => t.name);
+    if (named.length > 0) {
+      const blocks = named.map((t) => {
+        const args = (t.arguments || "").trimEnd();
+        return `**${t.name}**${args ? `\n\n\`\`\`json\n${args}\n\`\`\`` : ""}`;
+      });
+      parts.push(blocks.join("\n\n"));
+    }
+    const md = parts.join("\n\n");
+    const progress = v.hermesOrder
+      .map((id) => v.hermesById.get(id))
+      .filter((ev): ev is HermesToolProgress => Boolean(ev));
+    // Snapshot the timeline so React sees a new identity for each text item
+    // when its content grows (text items are mutated in place during the run).
+    const timelineSnapshot = v.timeline.map((it) =>
+      it.kind === "text" ? { ...it } : it,
+    );
+    const assistantUiId = v.assistantUiId;
+    sessions.setActiveMessages((prev) =>
+      (prev as UiMessage[]).map((m) =>
+        m.uiId === assistantUiId
+          ? {
+              ...m,
+              streamVerbose: md,
+              hermesToolProgress: progress,
+              assistantTimeline: timelineSnapshot,
+            }
+          : m,
+      ),
+    );
+  }
+
+  function scheduleVerboseFlush(): void {
+    if (verboseFlushRafRef.current != null) return;
+    verboseFlushRafRef.current = requestAnimationFrame(() => {
+      verboseFlushRafRef.current = null;
+      applyVerboseToAssistant();
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Chat port: subscribe/snapshot/event handling.
+  //
+  // The agent loop lives in the service worker. The panel posts user input
+  // and receives `StreamEvent`s back over a long-lived port. Snapshot is the
+  // recovery path — sent on `subscribe` so a freshly mounted panel (or one
+  // switching to a session that was streaming in another tab) can rebuild
+  // the in-flight assistant bubble from accumulated runtime state.
+  // -------------------------------------------------------------------------
+
+  function resetLiveStreamState(): void {
+    cancelStreamChunkFlush();
+    cancelVerboseFlush();
+    streamChunkBufRef.current = null;
+    verboseStateRef.current = null;
+  }
+
+  function hydrateLocalFromSnapshot(state: ChatRuntimeState): void {
+    if (!state.assistantUiId) return;
+    verboseStateRef.current = {
+      assistantUiId: state.assistantUiId,
+      reasoning: state.reasoning,
+      tools: state.toolCalls.slice(),
+      hermesOrder: state.hermesOrder.slice(),
+      hermesById: new Map(
+        state.hermesToolProgress.map((e) => [e.toolCallId, e]),
+      ),
+      // Copy text items so the in-place `last.text += delta` mutations
+      // from future chunk events don't retroactively rewrite history.
+      timeline: state.timeline.map((it) =>
+        it.kind === "text" ? { ...it } : { ...it },
+      ),
+    };
+    if (state.streaming) {
+      // The accumulator buffers later deltas on top of the snapshot's
+      // accumulated text. We start `pending` empty; the next chunk event
+      // appends to message.content (which we'll set to assistantText below).
+      streamChunkBufRef.current = {
+        assistantUiId: state.assistantUiId,
+        pending: "",
+      };
+    }
+  }
+
+  function handleSnapshot(
+    sessionId: string,
+    state: ChatRuntimeState | null,
+  ): void {
+    if (sessionId !== sessions.activeId) return;
+    if (!state) {
+      // No runtime state for this session. Whatever the persisted
+      // `streaming` flag said, the panel-level busy must drop now —
+      // otherwise switching to a fresh session keeps the composer
+      // disabled from a previous session's streaming state.
+      setBusy(false);
+      // If the persisted log still carries a `streaming: true` flag
+      // (panel was reloaded after the SW was killed mid-stream and
+      // forgot the runtime), sanitize it here — otherwise the bubble
+      // spins forever.
+      sessions.setActiveMessages((prev) => {
+        const dirty = (prev as UiMessage[]).some((m) => m.streaming);
+        if (!dirty) return prev;
+        return (prev as UiMessage[]).map((m) =>
+          m.streaming
+            ? {
+                ...m,
+                streaming: false,
+                content: m.content
+                  ? m.content + "\n\n[interrupted]"
+                  : "[interrupted]",
+              }
+            : m,
+        );
+      });
+      return;
+    }
+    // Rebuild local accumulators from the snapshot, then overlay
+    // accumulated content onto the matching assistant bubble.
+    hydrateLocalFromSnapshot(state);
+    setBusy(state.streaming);
+    sessions.setActiveMessages((prev) => {
+      const next = (prev as UiMessage[]).map((m) => {
+        if (m.uiId !== state.assistantUiId) return m;
+        const interrupted = !state.streaming && state.error;
+        return {
+          ...m,
+          content:
+            state.assistantText +
+            (interrupted ? "\n\n[interrupted]" : ""),
+          streaming: state.streaming,
+          // Carry the chip URL the engine captured at end-of-turn through to
+          // any panel that opens AFTER the stream finished. While the panel
+          // is open, handleStreamDone writes this directly from the event
+          // payload; this is just the cold-open fallback.
+          ...(state.agentFinalUrl
+            ? {
+                agentFinalUrl: state.agentFinalUrl,
+                agentFinalTitle: state.agentFinalTitle ?? undefined,
+              }
+            : {}),
+        };
+      });
+      return next;
+    });
+    applyVerboseToAssistant();
+    if (state.error && !state.streaming) {
+      setError({
+        message: state.error.message,
+        hint: state.error.hint,
+      });
+    }
+  }
+
+  function resolvePendingTurn(sessionId: string): void {
+    const p = pendingTurnRef.current;
+    if (p && p.sessionId === sessionId) {
+      pendingTurnRef.current = null;
+      p.resolve();
+    }
+    // Busy clearance is owned by the terminal-event handlers when the
+    // session is active, or by `handleSnapshot` on the no-runtime path
+    // — both of which the caller has already invoked. Touching busy
+    // here would clobber the active session's flag when a background
+    // session's terminal event arrives mid-stream of the foreground one.
+  }
+
+  function rejectPendingTurn(sessionId: string, err: Error): void {
+    const p = pendingTurnRef.current;
+    if (p && p.sessionId === sessionId) {
+      pendingTurnRef.current = null;
+      p.reject(err);
+    }
+  }
+
+  function handleStreamDone(
+    sessionId: string,
+    agentFinalUrl?: string,
+    agentFinalTitle?: string,
+  ): void {
+    if (sessionId !== sessions.activeId) {
+      resolvePendingTurn(sessionId);
+      return;
+    }
+    cancelStreamChunkFlush();
+    applyVerboseToAssistant();
+    cancelVerboseFlush();
+    flushStreamChunksToMessages();
+    const assistantUiId =
+      streamChunkBufRef.current?.assistantUiId ??
+      verboseStateRef.current?.assistantUiId ??
+      null;
+    streamChunkBufRef.current = null;
+    verboseStateRef.current = null;
+    if (assistantUiId) {
+      sessions.setActiveMessages((prev) => {
+        const next = (prev as UiMessage[]).map((m) =>
+          m.uiId === assistantUiId
+            ? {
+                ...m,
+                streaming: false,
+                ...(agentFinalUrl
+                  ? { agentFinalUrl, agentFinalTitle }
+                  : {}),
+              }
+            : m,
+        );
+        void sessions.touchSession(sessionId, next);
+        return next;
+      });
+    }
+    setBusy(false);
+    resolvePendingTurn(sessionId);
+  }
+
+  function handleStreamAborted(sessionId: string): void {
+    if (sessionId !== sessions.activeId) {
+      rejectPendingTurn(sessionId, new DOMException("aborted", "AbortError"));
+      return;
+    }
+    cancelStreamChunkFlush();
+    applyVerboseToAssistant();
+    cancelVerboseFlush();
+    flushStreamChunksToMessages();
+    const assistantUiId =
+      streamChunkBufRef.current?.assistantUiId ??
+      verboseStateRef.current?.assistantUiId ??
+      null;
+    streamChunkBufRef.current = null;
+    verboseStateRef.current = null;
+    if (assistantUiId) {
+      sessions.setActiveMessages((prev) =>
+        (prev as UiMessage[]).map((m) =>
+          m.uiId === assistantUiId
+            ? {
+                ...m,
+                streaming: false,
+                content: m.content + "\n\n[stopped]",
+              }
+            : m,
+        ),
+      );
+    }
+    setBusy(false);
+    rejectPendingTurn(sessionId, new DOMException("aborted", "AbortError"));
+  }
+
+  function handleStreamError(
+    sessionId: string,
+    event: Extract<StreamEvent, { kind: "error" }>,
+  ): void {
+    if (sessionId !== sessions.activeId) {
+      rejectPendingTurn(sessionId, new Error(event.message));
+      return;
+    }
+    cancelStreamChunkFlush();
+    cancelVerboseFlush();
+    const assistantUiId =
+      streamChunkBufRef.current?.assistantUiId ??
+      verboseStateRef.current?.assistantUiId ??
+      null;
+    streamChunkBufRef.current = null;
+    verboseStateRef.current = null;
+    setPendingQueue((pq) => {
+      for (const q of pq) {
+        for (const a of q.attachments) void deleteAttachmentFile(a);
+      }
+      return [];
+    });
+    setError({ message: event.message, hint: event.hint });
+    if (assistantUiId) {
+      sessions.setActiveMessages((prev) =>
+        (prev as UiMessage[]).filter((m) => m.uiId !== assistantUiId),
+      );
+    }
+    setBusy(false);
+    rejectPendingTurn(sessionId, new Error(event.message));
+  }
+
+  function handleStreamEvent(sessionId: string, event: StreamEvent): void {
+    if (sessionId !== sessions.activeId) {
+      // Terminal events for non-active sessions still need to settle the
+      // local awaiter (if any) — otherwise `runChatTurn` for a backgrounded
+      // tab would never resolve.
+      if (event.kind === "done")
+        handleStreamDone(sessionId, event.agentFinalUrl, event.agentFinalTitle);
+      else if (event.kind === "aborted") handleStreamAborted(sessionId);
+      else if (event.kind === "error") handleStreamError(sessionId, event);
+      return;
+    }
+    switch (event.kind) {
+      case "begin":
+        setBusy(true);
+        if (!streamChunkBufRef.current) {
+          streamChunkBufRef.current = {
+            assistantUiId: event.assistantUiId,
+            pending: "",
+          };
+        }
+        if (!verboseStateRef.current) {
+          verboseStateRef.current = {
+            assistantUiId: event.assistantUiId,
+            reasoning: "",
+            tools: [],
+            hermesOrder: [],
+            hermesById: new Map(),
+            timeline: [],
+          };
+        }
+        break;
+      case "chunk": {
+        const slot = streamChunkBufRef.current;
+        if (slot) slot.pending += event.text;
+        appendTextToVerboseTimeline(event.text);
+        scheduleStreamChunkFlush();
+        scheduleVerboseFlush();
+        break;
+      }
+      case "reasoning": {
+        const v = verboseStateRef.current;
+        if (v) v.reasoning += event.text;
+        scheduleVerboseFlush();
+        break;
+      }
+      case "toolCalls": {
+        const v = verboseStateRef.current;
+        if (v) v.tools = event.calls.slice();
+        scheduleVerboseFlush();
+        break;
+      }
+      case "hermesToolProgress": {
+        const v = verboseStateRef.current;
+        const inner = event.event;
+        if (v) {
+          if (!v.hermesById.has(inner.toolCallId)) {
+            v.hermesOrder.push(inner.toolCallId);
+            appendToolToVerboseTimeline(inner.toolCallId);
+          }
+          v.hermesById.set(inner.toolCallId, inner);
+        }
+        scheduleVerboseFlush();
+        break;
+      }
+      case "session":
+        if (event.sessionId && event.sessionId !== sessionId) {
+          console.warn(
+            "[sidepanel] gateway returned session id %s but we expected %s; ignoring.",
+            event.sessionId,
+            sessionId,
+          );
+        }
+        break;
+      case "done":
+        handleStreamDone(sessionId, event.agentFinalUrl, event.agentFinalTitle);
+        break;
+      case "aborted":
+        handleStreamAborted(sessionId);
+        break;
+      case "error":
+        handleStreamError(sessionId, event);
+        break;
+    }
+  }
+
+  // The port handler closes over the current render's `sessions`, so it must
+  // be re-bound when activeId changes. We keep the latest function in a ref
+  // and install a single stable listener that delegates through it; this
+  // sidesteps the listener add/remove race that swapping the listener on
+  // every activeId change would create.
+  const portMessageRef = useRef<(raw: BgToClientMessage) => void>(() => {});
+  useEffect(() => {
+    portMessageRef.current = (raw: BgToClientMessage) => {
+      if (!raw || typeof raw !== "object") return;
+      if (raw.type === "snapshot") handleSnapshot(raw.sessionId, raw.state);
+      else if (raw.type === "event") handleStreamEvent(raw.sessionId, raw.event);
+    };
+  });
+
+  useEffect(() => {
+    let port: chrome.runtime.Port | null = null;
+    try {
+      port = chrome.runtime.connect({ name: CHAT_PORT_NAME });
+    } catch (e) {
+      console.warn("[sidepanel] chat port connect failed:", e);
+      return;
+    }
+    portRef.current = port;
+    const stableListener = (raw: unknown) =>
+      portMessageRef.current(raw as BgToClientMessage);
+    port.onMessage.addListener(stableListener);
+    port.onDisconnect.addListener(() => {
+      portRef.current = null;
+    });
+    return () => {
+      try {
+        port?.disconnect();
+      } catch {
+        // Best-effort: port may already be torn down.
+      }
+      portRef.current = null;
+    };
+  }, []);
+
+  // (Re)subscribe whenever the active tab flips. The SW dedupes via its
+  // subscription Set; calling subscribe also re-delivers a snapshot, which
+  // is how we recover an in-flight stream when the user switches back to a
+  // tab that was streaming in the background.
+  useEffect(() => {
+    if (!sessions.ready || !sessions.activeId) return;
+    const port = portRef.current;
+    if (!port) return;
+    try {
+      port.postMessage({ type: "subscribe", sessionId: sessions.activeId });
+    } catch (e) {
+      console.warn("[sidepanel] subscribe failed:", e);
+    }
+  }, [sessions.ready, sessions.activeId]);
 
   useLayoutEffect(() => {
     const el = composerTextareaRef.current;
@@ -453,6 +985,26 @@ export default function SidePanel() {
     return () => chrome.runtime.onMessage.removeListener(onMsg);
   }, []);
 
+  useEffect(() => {
+    const onMsg = (msg: {
+      type?: string;
+      navigateOpenPolicy?: NavigateOpenPolicy;
+    }) => {
+      if (msg?.type !== "hermes:navigate-open-policy-changed") return;
+      const p = msg.navigateOpenPolicy;
+      if (
+        p === "auto" ||
+        p === "agent" ||
+        p === "user_new_tab" ||
+        p === "user_same_tab"
+      ) {
+        setNavigateOpenPolicy(p);
+      }
+    };
+    chrome.runtime.onMessage.addListener(onMsg);
+    return () => chrome.runtime.onMessage.removeListener(onMsg);
+  }, []);
+
   // Load chat-config on mount and watch for changes from the Options page so
   // the side panel always reflects the latest model / apiBase / apiKey.
   useEffect(() => {
@@ -461,16 +1013,37 @@ export default function SidePanel() {
         SETTINGS_KEYS.apiBase,
         SETTINGS_KEYS.apiKey,
         SETTINGS_KEYS.model,
-        SETTINGS_KEYS.pageMode,
-        SETTINGS_KEYS.runModeDefault,
+        SETTINGS_KEYS.navigateOpenPolicy,
+        SETTINGS_KEYS.showStreamDetails,
       ]);
-      if (typeof r[SETTINGS_KEYS.pageMode] === "boolean") {
-        setPageMode(r[SETTINGS_KEYS.pageMode] as boolean);
+      if (typeof r[SETTINGS_KEYS.showStreamDetails] === "boolean") {
+        setShowStreamDetails(r[SETTINGS_KEYS.showStreamDetails] as boolean);
       }
-      const storedRunMode = r[SETTINGS_KEYS.runModeDefault];
-      if (storedRunMode === "agent" || storedRunMode === "user") {
-        setRunMode(storedRunMode);
+      showStreamDetailsLoadedRef.current = true;
+      const storedNavPolicy = r[SETTINGS_KEYS.navigateOpenPolicy];
+      const legacyRun = r["settings.sidepanel.runModeDefault"] as string | undefined;
+      let navPol: NavigateOpenPolicy =
+        storedNavPolicy === "agent" ||
+        storedNavPolicy === "user_new_tab" ||
+        storedNavPolicy === "user_same_tab"
+          ? storedNavPolicy
+          : "auto";
+      if (
+        storedNavPolicy === undefined &&
+        (legacyRun === "user" || legacyRun === "agent")
+      ) {
+        navPol = legacyRun === "user" ? "user_same_tab" : "agent";
       }
+      setNavigateOpenPolicy(navPol);
+      try {
+        await chrome.runtime.sendMessage({
+          action: "navigateOpenPolicy.set",
+          policy: navPol,
+        });
+      } catch {
+        // SW may not be ready yet.
+      }
+      await applyOpenPolicyToRunTarget(navPol);
       setConfig({
         apiBase:
           typeof r[SETTINGS_KEYS.apiBase] === "string"
@@ -506,54 +1079,35 @@ export default function SidePanel() {
             ? (changes[SETTINGS_KEYS.model]!.newValue as string)
             : prev.model,
       }));
+      if (typeof changes[SETTINGS_KEYS.showStreamDetails]?.newValue === "boolean") {
+        setShowStreamDetails(
+          changes[SETTINGS_KEYS.showStreamDetails]!.newValue as boolean,
+        );
+      }
     };
     chrome.storage.onChanged.addListener(onChanged);
     return () => chrome.storage.onChanged.removeListener(onChanged);
   }, []);
 
-  // Persist the include-page toggle so it survives panel reloads. The
-  // first write right after the loader hydrates is redundant-but-cheap;
-  // we accept that to avoid the ref-based "skip first run" gymnastics.
   useEffect(() => {
-    void chrome.storage.local.set({ [SETTINGS_KEYS.pageMode]: pageMode });
-  }, [pageMode]);
+    showStreamDetailsRef.current = showStreamDetails;
+  }, [showStreamDetails]);
 
-  // Same write-on-change pattern for the run-mode toggle. Sticky across
-  // panel reloads.
   useEffect(() => {
+    if (!showStreamDetailsLoadedRef.current) return;
     void chrome.storage.local.set({
-      [SETTINGS_KEYS.runModeDefault]: runMode,
+      [SETTINGS_KEYS.showStreamDetails]: showStreamDetails,
     });
-  }, [runMode]);
+  }, [showStreamDetails]);
 
-  // If the panel was reloaded mid-stream (or the user closed the side panel
-  // while the assistant was still emitting tokens), the persisted history
-  // can still carry `streaming: true` on the last assistant message. Clear
-  // those flags whenever we activate a session so we don't render a fake
-  // loading indicator forever.
-  const lastSanitisedRef = useRef<string>("");
-  useEffect(() => {
-    if (!sessions.ready) return;
-    if (sessions.activeId === lastSanitisedRef.current) return;
-    lastSanitisedRef.current = sessions.activeId;
-    const dirty = (sessions.activeMessages as UiMessage[]).some(
-      (m) => m.streaming,
-    );
-    if (!dirty) return;
-    sessions.setActiveMessages((prev) =>
-      (prev as UiMessage[]).map((m) =>
-        m.streaming
-          ? {
-              ...m,
-              streaming: false,
-              content: m.content
-                ? m.content + "\n\n[interrupted]"
-                : "[interrupted]",
-            }
-          : m,
-      ),
-    );
-  }, [sessions.ready, sessions.activeId, sessions.activeMessages, sessions]);
+  // Recovery for persisted `streaming: true` flags is now driven by the
+  // snapshot the SW returns on `subscribe`: if there's no runtime state for
+  // the session, `handleSnapshot` marks any still-streaming bubble as
+  // `[interrupted]`; if there IS runtime state, the bubble is rehydrated
+  // with the accumulated content from the still-running (or just-finished)
+  // background stream. The old eager sanitize-on-activate effect that lived
+  // here used to wipe partial text before the snapshot could arrive — see
+  // `handleSnapshot` for the replacement.
 
   // Auto-scroll on new content.
   useEffect(() => {
@@ -563,22 +1117,16 @@ export default function SidePanel() {
     if (el) (el as HTMLElement).scrollTop = (el as HTMLElement).scrollHeight;
   }, [sessions.activeMessages]);
 
-  // Aborting the in-flight stream when the user switches to a different
-  // session avoids race conditions where late-arriving SSE chunks would
-  // append to whatever session happens to be active. We also drop any
-  // pinned page snapshots: pins are a compose-time affordance scoped to
-  // the conversation the user was looking at when they pinned.
+  // Session switch: drop panel-local stream accumulators and compose-time
+  // affordances (pinned pages, attachments). The previous session's stream
+  // keeps running in the SW; switching back to that session will
+  // re-subscribe and rebuild local state from the snapshot.
   const lastSeenActiveRef = useRef<string>("");
   useEffect(() => {
     if (sessions.activeId !== lastSeenActiveRef.current) {
       const wasInitialised = lastSeenActiveRef.current !== "";
       lastSeenActiveRef.current = sessions.activeId;
-      if (abortRef.current) {
-        abortRef.current.abort();
-        abortRef.current = null;
-      }
-      cancelStreamChunkFlush();
-      streamChunkBufRef.current = null;
+      resetLiveStreamState();
       if (wasInitialised) {
         setPendingQueue((prev) => {
           for (const q of prev) {
@@ -604,16 +1152,14 @@ export default function SidePanel() {
   async function runChatTurn(args: {
     text: string;
     attachments: Attachment[];
-    pinnedPagesForTurn: PinnedPage[];
-    pageModeForTurn: boolean;
-    runModeForTurn: RunTarget;
+    attachedPagesForTurn: PinnedPage[];
+    navigateOpenPolicyForTurn: NavigateOpenPolicy;
   }): Promise<void> {
     const {
       text,
       attachments: attachmentsForTurn,
-      pinnedPagesForTurn,
-      pageModeForTurn,
-      runModeForTurn,
+      attachedPagesForTurn,
+      navigateOpenPolicyForTurn,
     } = args;
 
     setError(null);
@@ -621,24 +1167,11 @@ export default function SidePanel() {
 
     const sessionId = await sessions.ensureActive();
 
-    // Build the page-context list for THIS turn:
-    //   1. All pinned snapshots (already captured at pin time).
-    //   2. The live current tab if `pageMode` is on, freshly extracted so
-    //      follow-ups against an evolving page work.
-    //
-    // Pinned entries take precedence on URL collision so we never re-extract
-    // a page the user has already explicitly pinned.
-    const pages: PageContext[] = [...pinnedPagesForTurn];
-    if (pageModeForTurn) {
-      const result = await capturePageContext();
-      if (result.kind === "page") {
-        if (!pages.some((p) => p.url === result.page.url)) {
-          pages.push(result.page);
-        }
-      } else {
-        setPageError(result.error.error);
-      }
-    }
+    // One-shot page attachments for THIS turn only. Each was captured at
+    // pin time (eager snapshot) — `attachedPages` is cleared after send so
+    // they never persist into follow-up turns. Inspecting the user's tab
+    // live happens via the agent's `my_browser_active_tab` tool.
+    const pages: PageContext[] = [...attachedPagesForTurn];
 
     const pageSystemMessage: ChatMessage | null =
       pages.length > 0
@@ -708,39 +1241,12 @@ export default function SidePanel() {
     });
     setBusy(true);
 
-    // Push the run-target for this turn into the SW *before* the chat
-    // request opens — once `streamChat` returns its first chunk the
-    // gateway is already free to dispatch tool calls, so the SW state
-    // it reads at that moment must already be the user's choice. We
-    // capture the side-panel's window id so "user" mode has a stable
-    // handle on the user's tab even if Chrome reshuffles focus
-    // mid-conversation.
-    const turnRunMode = runModeForTurn;
+    // Push runTarget from Open policy *before* the gateway may dispatch tools.
     try {
-      if (turnRunMode === "user") {
-        const win = await chrome.windows.getCurrent();
-        const [activeUserTab] = await chrome.tabs.query({
-          active: true,
-          windowId: win.id,
-        });
-        await chrome.runtime.sendMessage({
-          action: "runTarget.set",
-          target: "user",
-          userTabId: activeUserTab?.id ?? null,
-          userWindowId: win.id ?? null,
-        });
-      } else {
-        await chrome.runtime.sendMessage({
-          action: "runTarget.set",
-          target: "agent",
-        });
-      }
+      await applyOpenPolicyToRunTarget(navigateOpenPolicyForTurn);
     } catch (e) {
-      console.warn("[sidepanel] runTarget.set failed:", e);
+      console.warn("[sidepanel] applyOpenPolicyToRunTarget failed:", e);
     }
-
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
 
     // Snapshot the history we're sending so we don't accidentally include
     // the empty assistant placeholder we just appended.
@@ -765,130 +1271,65 @@ export default function SidePanel() {
       },
     ];
 
+    // Prime the panel-local accumulators BEFORE submitting so the port
+    // event listener (which fires asynchronously once the SW broadcasts
+    // back) finds populated state to mutate. The SW also maintains its
+    // own copy for snapshot-on-resubscribe; the two are kept in sync by
+    // applying every event on both sides.
     cancelStreamChunkFlush();
+    cancelVerboseFlush();
     streamChunkBufRef.current = {
       assistantUiId: assistantMsg.uiId,
       pending: "",
     };
+    verboseStateRef.current = {
+      assistantUiId: assistantMsg.uiId,
+      reasoning: "",
+      tools: [],
+      hermesOrder: [],
+      hermesById: new Map(),
+      timeline: [],
+    };
 
     try {
-      await streamChat(
-        history,
-        {
-          apiBase: config.apiBase,
-          apiKey: config.apiKey,
-          model: config.model,
-          sessionId,
-          signal: ctrl.signal,
-        },
-        {
-          onChunk: (delta) => {
-            const slot = streamChunkBufRef.current;
-            if (!slot) return;
-            slot.pending += delta;
-            scheduleStreamChunkFlush();
-          },
-          onSession: (s) => {
-            // 1:1 model: the extension owns the session id; only warn if
-            // the gateway echoes a different value.
-            if (s && s !== sessionId) {
-              console.warn(
-                "[sidepanel] gateway returned session id %s but we expected %s; ignoring.",
-                s,
-                sessionId,
-              );
-            }
-          },
-        },
-      );
-      cancelStreamChunkFlush();
-      flushStreamChunksToMessages();
-      streamChunkBufRef.current = null;
-      // After the stream resolves, ask the SW where the agent tab
-      // currently is — this becomes the "Open in my browser →" chip on
-      // the just-finished assistant bubble, the "teleport at end"
-      // affordance for the delegate-and-forget case. Only meaningful
-      // when this turn ran on the agent surface; user-mode turns
-      // already happened in the user's tab so the chip would be a
-      // no-op pointing at where they already are.
-      let agentFinalUrl: string | undefined;
-      let agentFinalTitle: string | undefined;
-      if (turnRunMode === "agent") {
-        try {
-          const r = (await chrome.runtime.sendMessage({
-            action: "agent.lastUrl",
-          })) as
-            | { ok?: boolean; url?: string | null; title?: string | null }
-            | undefined;
-          if (
-            r?.ok &&
-            typeof r.url === "string" &&
-            /^(https?|file|ftp):/i.test(r.url) &&
-            r.url !== "about:blank"
-          ) {
-            agentFinalUrl = r.url;
-            if (typeof r.title === "string" && r.title) {
-              agentFinalTitle = r.title;
-            }
-          }
-        } catch {
-          // Agent window might be gone — chip just won't render.
+      await new Promise<void>((resolve, reject) => {
+        pendingTurnRef.current = { sessionId, resolve, reject };
+        const port = portRef.current;
+        if (!port) {
+          pendingTurnRef.current = null;
+          reject(new Error("Background chat port is not connected."));
+          return;
         }
-      }
-      sessions.setActiveMessages((prev) => {
-        const next = (prev as UiMessage[]).map((m) =>
-          m.uiId === assistantMsg.uiId
-            ? {
-                ...m,
-                streaming: false,
-                ...(agentFinalUrl
-                  ? { agentFinalUrl, agentFinalTitle }
-                  : {}),
-              }
-            : m,
-        );
-        void sessions.touchSession(sessionId, next);
-        return next;
+        try {
+          port.postMessage({
+            type: "submit",
+            payload: {
+              sessionId,
+              assistantUiId: assistantMsg.uiId,
+              apiBase: config.apiBase,
+              apiKey: config.apiKey,
+              model: config.model,
+              history,
+            },
+          });
+        } catch (e) {
+          pendingTurnRef.current = null;
+          reject(e as Error);
+        }
       });
     } catch (e) {
+      // The terminal-event handlers (handleStreamAborted /
+      // handleStreamError) have already applied the visible UI changes —
+      // marking the bubble [stopped], surfacing the error banner, etc.
+      // We only log non-abort failures here for debugging.
       const err = e as Error;
-      if (err.name === "AbortError") {
-        cancelStreamChunkFlush();
-        flushStreamChunksToMessages();
-        streamChunkBufRef.current = null;
-        sessions.setActiveMessages((prev) =>
-          (prev as UiMessage[]).map((m) =>
-            m.uiId === assistantMsg.uiId
-              ? {
-                  ...m,
-                  streaming: false,
-                  content: m.content + "\n\n[stopped]",
-                }
-              : m,
-          ),
-        );
-      } else {
-        cancelStreamChunkFlush();
-        streamChunkBufRef.current = null;
-        setPendingQueue((pq) => {
-          for (const q of pq) {
-            for (const a of q.attachments) void deleteAttachmentFile(a);
-          }
-          return [];
-        });
-        const message = String(err?.message || err);
-        const hint =
-          err instanceof HermesHttpError ? err.hint() || undefined : undefined;
-        setError({ message, hint });
-        sessions.setActiveMessages((prev) =>
-          (prev as UiMessage[]).filter((m) => m.uiId !== assistantMsg.uiId),
-        );
+      if (err.name !== "AbortError") {
+        console.warn("[sidepanel] stream failed:", err.message);
       }
     } finally {
-      cancelStreamChunkFlush();
-      streamChunkBufRef.current = null;
-      setBusy(false);
-      abortRef.current = null;
+      // Busy clearance is owned by the terminal-event handlers (so a
+      // background session's `done` doesn't clobber the active session's
+      // busy state). Do NOT touch busy here.
       setPendingQueue((prev) => {
         if (prev.length === 0) return prev;
         const [head, ...tail] = prev;
@@ -896,9 +1337,8 @@ export default function SidePanel() {
           void runChatTurn({
             text: head.text,
             attachments: head.attachments,
-            pinnedPagesForTurn: head.pinnedPagesSnapshot,
-            pageModeForTurn: head.pageModeSnapshot,
-            runModeForTurn: head.runModeSnapshot,
+            attachedPagesForTurn: head.attachedPagesSnapshot,
+            navigateOpenPolicyForTurn: head.navigateOpenPolicySnapshot,
           }),
         );
         return tail;
@@ -925,27 +1365,30 @@ export default function SidePanel() {
           queueId: shortId("q"),
           text,
           attachments: attachmentsForSend.map((a) => ({ ...a })),
-          pinnedPagesSnapshot: pinnedPages.map((p) => ({ ...p })),
-          pageModeSnapshot: pageMode,
-          runModeSnapshot: runMode,
+          attachedPagesSnapshot: pinnedPages.map((p) => ({ ...p })),
+          navigateOpenPolicySnapshot: navigateOpenPolicy,
         },
       ]);
       setInput("");
       setAttachments([]);
+      // Page attachments are one-shot — clear so they don't double-attach
+      // to a follow-up turn the user types while this one is still in flight.
+      setPinnedPages([]);
       setAttachmentError(null);
       return;
     }
 
     setInput("");
     setAttachments([]);
+    const attachedPagesForSend = pinnedPages.map((p) => ({ ...p }));
+    setPinnedPages([]);
     setAttachmentError(null);
 
     await runChatTurn({
       text,
       attachments: attachmentsForSend,
-      pinnedPagesForTurn: pinnedPages,
-      pageModeForTurn: pageMode,
-      runModeForTurn: runMode,
+      attachedPagesForTurn: attachedPagesForSend,
+      navigateOpenPolicyForTurn: navigateOpenPolicy,
     });
   }
 
@@ -956,7 +1399,15 @@ export default function SidePanel() {
       }
       return [];
     });
-    abortRef.current?.abort();
+    const sid = sessions.activeId;
+    const port = portRef.current;
+    if (sid && port) {
+      try {
+        port.postMessage({ type: "abort", sessionId: sid });
+      } catch (e) {
+        console.warn("[sidepanel] abort post failed:", e);
+      }
+    }
   }
 
   function removePendingQueueItem(queueId: string) {
@@ -980,13 +1431,30 @@ export default function SidePanel() {
     }
   }
 
-  // Mid-run hand-off: flip to "user" mode AND ferry the agent's
+  async function handleNavigateOpenPolicyChange(next: NavigateOpenPolicy) {
+    setNavigateOpenPolicy(next);
+    await chrome.storage.local.set({
+      [SETTINGS_KEYS.navigateOpenPolicy]: next,
+    });
+    try {
+      await chrome.runtime.sendMessage({
+        action: "navigateOpenPolicy.set",
+        policy: next,
+      });
+    } catch (e) {
+      console.warn("[sidepanel] navigateOpenPolicy.set failed:", e);
+    }
+    await applyOpenPolicyToRunTarget(next);
+  }
+
+  // Mid-run hand-off: pin Open to Same tab, then ferry the agent's
   // current URL into the user's tab so the user picks up exactly
   // where the agent left off. We don't abort the run — the agent
   // keeps streaming whatever it was about to say; only the *next*
   // tool call (if any) routes to the user tab.
   async function moveToMyTab() {
     try {
+      await handleNavigateOpenPolicyChange("user_same_tab");
       const win = await chrome.windows.getCurrent();
       const [activeUserTab] = await chrome.tabs.query({
         active: true,
@@ -997,11 +1465,6 @@ export default function SidePanel() {
         userTabId: activeUserTab?.id ?? null,
         userWindowId: win.id ?? null,
       });
-      // Reflect the change locally so the toggle and status bar agree
-      // without waiting for the SW broadcast round-trip. A future
-      // SW-driven resync (via `hermes:run-target-changed`) would
-      // overwrite this if needed.
-      setRunMode("user");
     } catch (e) {
       console.warn("[sidepanel] promoteToUser failed:", e);
     }
@@ -1022,9 +1485,14 @@ export default function SidePanel() {
     for (const a of attachments) void deleteAttachmentFile(a);
     setAttachments([]);
     setAttachmentError(null);
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
+    const sid = sessions.activeId;
+    const port = portRef.current;
+    if (sid && port) {
+      try {
+        port.postMessage({ type: "abort", sessionId: sid });
+      } catch (e) {
+        console.warn("[sidepanel] abort post failed:", e);
+      }
     }
     await sessions.createNew();
   }
@@ -1079,13 +1547,6 @@ export default function SidePanel() {
         if (prev.some((p) => p.url === ctx.url)) return prev;
         return [...prev, { uiId: shortId("pin"), ...ctx }];
       });
-      // Pinning is also the canonical "re-attach this page" gesture: if
-      // the user previously hit × on the live chip (which flips pageMode
-      // off), clicking Pin should bring the page back AND pin it. Setting
-      // pageMode on here also means a later unpin via the Pin toggle
-      // leaves the page attached as the live current-tab chip rather
-      // than removing it entirely.
-      setPageMode(true);
     } finally {
       setPinning(false);
     }
@@ -1095,19 +1556,10 @@ export default function SidePanel() {
     setPinnedPages((prev) => prev.filter((p) => p.uiId !== uiId));
   }
 
-  // × handler shared by both pinned chips and the live current-tab chip.
-  // Conceptually "remove this page from the next request":
-  //   - drop the pinned snapshot (if any), AND
-  //   - if the chip represents the active tab, also flip pageMode off so
-  //     it doesn't immediately re-appear as the live current-tab chip.
-  // A pinned chip whose URL doesn't match the active tab keeps the
-  // existing semantics — we just unpin it and leave pageMode alone.
-  function dismissPageChip(opts: { uiId?: string; url?: string }) {
+  /** × handler on a pending-page chip — just drop the snapshot. */
+  function dismissPageChip(opts: { uiId?: string }) {
     if (opts.uiId) {
       setPinnedPages((prev) => prev.filter((p) => p.uiId !== opts.uiId));
-    }
-    if (opts.url && activeTab?.url === opts.url) {
-      setPageMode(false);
     }
   }
 
@@ -1334,7 +1786,10 @@ export default function SidePanel() {
                   hasHistory={sessions.sessions.length > 0}
                 />
               ) : (
-                <MessageTurns messages={messages} />
+                <MessageTurns
+                  messages={messages}
+                  showStreamDetails={showStreamDetails}
+                />
               )}
 
               {error && (
@@ -1502,20 +1957,12 @@ export default function SidePanel() {
         >
           {(() => {
             // The live current chip is suppressed when:
-            //   - its URL already matches a pinned snapshot (de-dupe), OR
-            //   - the current page is restricted (chrome://, Web Store…)
-            //     so we couldn't read it even if we tried.
-            // In both cases showing a chip would be misleading.
-            const liveTabVisible =
-              pageMode &&
-              !!activeTab &&
-              !!activeTab.url &&
-              !pageRestrictedReason &&
-              !pinnedPages.some((p) => p.url === activeTab.url);
+            // The pending-page list is now strictly opt-in (click Pin to add
+            // a one-shot snapshot of the current tab). No more "live current
+            // tab" chip — the agent reads the user's tab on demand via
+            // my_browser_active_tab.
             const anyChips =
-              pinnedPages.length > 0 ||
-              liveTabVisible ||
-              attachments.length > 0;
+              pinnedPages.length > 0 || attachments.length > 0;
             if (!anyChips) return null;
             return (
               <div className="flex flex-wrap items-center gap-1 border-b border-border/50 px-2 py-1.5">
@@ -1525,22 +1972,9 @@ export default function SidePanel() {
                     title={p.title}
                     url={p.url}
                     favIconUrl={p.favicon}
-                    onRemove={() =>
-                      dismissPageChip({ uiId: p.uiId, url: p.url })
-                    }
+                    onRemove={() => dismissPageChip({ uiId: p.uiId })}
                   />
                 ))}
-                {liveTabVisible && (
-                  <PageChip
-                    title={activeTab!.title}
-                    url={activeTab!.url}
-                    favIconUrl={activeTab!.favIconUrl}
-                    live
-                    onRemove={() =>
-                      dismissPageChip({ url: activeTab!.url })
-                    }
-                  />
-                )}
                 {attachments.map((a) => (
                   <AttachmentChip
                     key={a.uiId}
@@ -1560,8 +1994,8 @@ export default function SidePanel() {
                 ? "等待附件上传完成…"
                 : attachments.length > 0
                   ? "Add a question about your file(s)…"
-                  : pageMode
-                    ? "Ask about this page…"
+                  : pinnedPages.length > 0
+                    ? "Ask about the attached page(s)…"
                     : "Message Hermes…"
             }
             rows={2}
@@ -1586,45 +2020,37 @@ export default function SidePanel() {
           />
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground">
-              {busy && (
-                <>
-                  <span aria-hidden className="hermes-thinking-dot shrink-0" />
-                  {runMode === "user" ? (
-                    <MousePointerClick className="h-3 w-3 shrink-0" />
-                  ) : (
-                    <Bot className="h-3 w-3 shrink-0" />
-                  )}
-                  <span className="min-w-0 max-w-[10rem] truncate sm:max-w-[14rem]">
-                    {runMode === "user"
-                      ? "Driving your tab"
-                      : "Working in background"}
-                  </span>
-                  {runMode !== "user" && (
-                    <div className="flex shrink-0 items-center gap-1">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => void showAgentWindow()}
-                        className="h-5 px-1.5 text-[10px]"
-                        title="Bring the agent's background window forward"
-                      >
-                        Show window
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => void moveToMyTab()}
-                        className="h-5 px-1.5 text-[10px]"
-                        title="Switch to your tab and bring the agent's current URL with you"
-                      >
-                        Move to my tab
-                      </Button>
-                    </div>
-                  )}
-                </>
-              )}
+              {busy &&
+                (navigateOpenPolicy === "auto" ||
+                  navigateOpenPolicy === "agent") && (
+                  // Mid-run handoff affordances for the agent window. The
+                  // "running" signal itself lives on individual tool chips
+                  // (amber + breathing dot) and the bubble caret, so a
+                  // separate global spinner + "Open: …" status would just
+                  // duplicate state the user can already see in the bubble.
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void showAgentWindow()}
+                      className="h-5 px-1.5 text-[10px]"
+                      title="Bring the agent's background window forward"
+                    >
+                      Show window
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void moveToMyTab()}
+                      className="h-5 px-1.5 text-[10px]"
+                      title="Switch to Same tab + bring the agent's current URL with you"
+                    >
+                      Move to my tab
+                    </Button>
+                  </div>
+                )}
               <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
@@ -1641,79 +2067,33 @@ export default function SidePanel() {
                 <Paperclip className="h-3 w-3" />
               </button>
               {/*
-                The composer pill is conceptually one element — the "Page"
-                toggle — with a small pin icon embedded on its right edge as
-                a secondary toggle. To keep the pill *visually* seamless we
-                don't split the surface into segments; to keep it accessible
-                we use a div-as-button outside (role=button + tabIndex +
-                keydown for Enter/Space) and a real <button> inside.
-                `stopPropagation` on the inner click/keydown is what
-                prevents the Pin action from also toggling Page.
+                Pin: attach the user's current tab as a one-shot snapshot for
+                the next message. Cleared after send (the agent reads live
+                pages on demand via `my_browser_active_tab` / `read_tab`).
+                Re-clicking before send toggles the pin off.
               */}
-              <div
-                role="button"
-                tabIndex={0}
-              aria-pressed={pageMode}
-              onClick={() => {
-                setPageError(null);
-                setPageMode((v) => !v);
-                refreshActiveTab();
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setPageError(null);
-                  setPageMode((v) => !v);
-                  refreshActiveTab();
-                }
-              }}
-              title={
-                pageMode
-                  ? "Stop attaching the current page"
-                  : "Attach the current page as context"
-              }
-              className={cn(
-                "inline-flex h-6 cursor-pointer select-none items-center gap-1 rounded-full border pl-2 pr-1 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-                pageMode
-                  ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90"
-                  : "border-border bg-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-              )}
-            >
-              <Globe className="h-3 w-3" />
-              <span>Page</span>
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void toggleCurrentPagePin();
-                }}
-                onKeyDown={(e) => {
-                  // Don't let Enter/Space bubble to the wrapper's keyboard
-                  // handler — otherwise hitting Space on the focused Pin
-                  // icon would also fire the Page toggle.
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.stopPropagation();
-                  }
-                }}
+                onClick={() => void toggleCurrentPagePin()}
                 disabled={pinDisabled}
-                title={
-                  pageRestrictedReason && !isCurrentPagePinned
-                    ? pageRestrictedReason
-                    : isCurrentPagePinned
-                      ? "Unpin this page"
-                      : "Pin the current page (snapshot — survives switching tabs)"
-                }
                 aria-pressed={isCurrentPagePinned}
                 aria-label={
                   isCurrentPagePinned
                     ? "Unpin current page"
-                    : "Pin current page"
+                    : "Attach current page to next message"
+                }
+                title={
+                  pageRestrictedReason && !isCurrentPagePinned
+                    ? pageRestrictedReason
+                    : isCurrentPagePinned
+                      ? "Detach this page from the next message"
+                      : "Attach the current page to the next message (one-shot snapshot)"
                 }
                 className={cn(
-                  "inline-flex h-5 w-5 items-center justify-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
-                  pageMode
-                    ? "hover:bg-primary-foreground/20"
-                    : "hover:bg-foreground/10",
+                  "inline-flex h-6 cursor-pointer select-none items-center gap-1 rounded-full border px-2 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                  isCurrentPagePinned
+                    ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90"
+                    : "border-border bg-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                   pinDisabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
                 )}
               >
@@ -1721,9 +2101,29 @@ export default function SidePanel() {
                   className="h-3 w-3"
                   fill={isCurrentPagePinned ? "currentColor" : "none"}
                 />
+                <span>Pin</span>
               </button>
+              <NavigateOpenPolicyToggle
+                policy={navigateOpenPolicy}
+                onChange={(next) => void handleNavigateOpenPolicyChange(next)}
+              />
+              <div
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/80 bg-muted/30 px-2 py-0.5"
+                title="在助手气泡中展示流式工具调用与推理片段（需模型返回相应字段）"
+              >
+                <Switch
+                  id="hermes-show-stream-details"
+                  checked={showStreamDetails}
+                  onCheckedChange={setShowStreamDetails}
+                  className="h-4 w-7 [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
+                />
+                <Label
+                  htmlFor="hermes-show-stream-details"
+                  className="cursor-pointer whitespace-nowrap text-[10px] font-medium text-muted-foreground"
+                >
+                  展示
+                </Label>
               </div>
-              <RunModeToggle mode={runMode} onChange={setRunMode} />
               </div>
             </div>
             {busy ? (
@@ -2158,7 +2558,13 @@ function bubbleTextContent(content: unknown): string {
 // reply is never lost. Sticky elements are bounded by their parent, so once
 // the next turn enters view its own user bubble takes over the pin without
 // any JS / scroll-listener gymnastics.
-function MessageTurns({ messages }: { messages: UiMessage[] }) {
+function MessageTurns({
+  messages,
+  showStreamDetails,
+}: {
+  messages: UiMessage[];
+  showStreamDetails: boolean;
+}) {
   type Turn = { user: UiMessage | null; replies: UiMessage[] };
   const turns: Turn[] = [];
   let cur: Turn | null = null;
@@ -2195,7 +2601,7 @@ function MessageTurns({ messages }: { messages: UiMessage[] }) {
             </div>
           )}
           {turn.replies.map((m) => (
-            <Bubble key={m.uiId} m={m} />
+            <Bubble key={m.uiId} m={m} showStreamDetails={showStreamDetails} />
           ))}
         </div>
       ))}
@@ -2203,7 +2609,81 @@ function MessageTurns({ messages }: { messages: UiMessage[] }) {
   );
 }
 
-function Bubble({ m }: { m: UiMessage }) {
+/**
+ * One tool-progress chip. Click toggles its own details panel. Running
+ * chips get an amber treatment + a breathing dot in place of the emoji
+ * so the live state is visible without a separate label.
+ */
+function ToolChip({ event }: { event: HermesToolProgress }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasDetail =
+    !!event.label &&
+    event.label.trim() !== "" &&
+    event.label.trim() !== event.tool;
+  const running = event.status === "running";
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <button
+        type="button"
+        disabled={!hasDetail}
+        onClick={() => hasDetail && setExpanded((v) => !v)}
+        className={cn(
+          "inline-flex max-w-full items-center gap-1.5 rounded-md border px-1.5 py-0.5 font-mono text-[10.5px] leading-none transition-colors",
+          running
+            ? "border-amber-400/60 bg-amber-50/70 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200"
+            : hasDetail
+              ? expanded
+                ? "border-border bg-muted text-foreground"
+                : "cursor-pointer border-border/60 bg-muted/30 text-foreground/75 hover:bg-muted/60"
+              : "cursor-default border-border/40 bg-muted/20 text-foreground/55",
+        )}
+        title={
+          running
+            ? `${event.tool} — running…`
+            : hasDetail
+              ? "Click to view details"
+              : event.tool
+        }
+      >
+        {running && (
+          <span aria-hidden className="hermes-thinking-dot shrink-0" />
+        )}
+        {!running && event.emoji && (
+          <span aria-hidden className="leading-none">
+            {event.emoji}
+          </span>
+        )}
+        <span>{event.tool}</span>
+      </button>
+      {expanded && hasDetail && (
+        <div className="w-full rounded-md border border-border/50 bg-muted/25 px-2 py-1.5">
+          <pre className="whitespace-pre-wrap break-all font-mono text-[10.5px] leading-snug text-muted-foreground">
+            {event.label}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Legacy stack-of-chips renderer used for old messages without a timeline. */
+function ToolProgressChips({ events }: { events: HermesToolProgress[] }) {
+  return (
+    <div className="flex flex-col items-start gap-1">
+      {events.map((ev) => (
+        <ToolChip key={ev.toolCallId} event={ev} />
+      ))}
+    </div>
+  );
+}
+
+function Bubble({
+  m,
+  showStreamDetails = false,
+}: {
+  m: UiMessage;
+  showStreamDetails?: boolean;
+}) {
   if (m.role === "user") {
     const bodyText = bubbleTextContent(m.content);
     // Prefer the new plural `pageBadges`. Fall back to the single legacy
@@ -2266,13 +2746,23 @@ function Bubble({ m }: { m: UiMessage }) {
   }
   if (m.role === "assistant") {
     const bodyText = bubbleTextContent(m.content);
+    const verboseText = bubbleTextContent(m.streamVerbose);
+    const toolProgress = m.hermesToolProgress ?? [];
+    const timeline = m.assistantTimeline ?? [];
+    const hasTimeline = showStreamDetails && timeline.length > 0;
+    const hasReasoningBlock =
+      showStreamDetails && verboseText.trim().length > 0;
+    const hasLegacyToolList =
+      showStreamDetails && !hasTimeline && toolProgress.length > 0;
+    const hasVerboseBlock =
+      hasReasoningBlock || hasLegacyToolList || hasTimeline;
     // While the request is in flight but no token has arrived yet, the bubble
     // would otherwise be just Streamdown's bare ● caret on an empty line —
     // which reads as a stray glyph rather than a status. Replace that with an
     // explicit "Thinking…" placeholder + breathing dot until content streams
-    // in.
+    // in — unless we're already showing a verbose (tools / reasoning) block.
     const isEmptyStreaming =
-      !!m.streaming && bodyText.trim() === "";
+      !!m.streaming && bodyText.trim() === "" && !hasVerboseBlock;
     if (isEmptyStreaming) {
       return (
         <div className="px-1 py-1 text-sm" aria-live="polite">
@@ -2283,17 +2773,103 @@ function Bubble({ m }: { m: UiMessage }) {
         </div>
       );
     }
+    // Only show "Generating answer…" when there's no other live signal:
+    // a running tool chip already communicates "agent is working", so the
+    // separate label would just be noise. Once every chip has flipped to
+    // completed AND no tokens have arrived yet, the agent is back in the
+    // model and we want the explicit "Generating answer…" hint.
+    const hasRunningTool = toolProgress.some((e) => e.status === "running");
+    // In timeline mode the answer text is already woven through the timeline,
+    // so "Generating answer…" only makes sense when we're rendering the
+    // legacy (chips-on-top, text-on-bottom) layout.
+    const awaitingAnswerOnly =
+      !!m.streaming &&
+      bodyText.trim() === "" &&
+      hasVerboseBlock &&
+      !hasRunningTool &&
+      !hasTimeline;
+    const progressMap = new Map(
+      toolProgress.map((p) => [p.toolCallId, p] as const),
+    );
     return (
       <div className="min-w-0 px-1 py-1 text-sm">
-        <Streamdown
-          mode="streaming"
-          parseIncompleteMarkdown
-          caret="circle"
-          isAnimating={!!m.streaming}
-          className="chat-md break-words"
-        >
-          {bodyText}
-        </Streamdown>
+        {hasReasoningBlock && (
+          <Streamdown
+            mode={m.streaming ? "streaming" : "static"}
+            parseIncompleteMarkdown
+            caret="circle"
+            isAnimating={!!m.streaming}
+            className="chat-md mb-2 break-words text-xs text-muted-foreground/80"
+          >
+            {verboseText}
+          </Streamdown>
+        )}
+        {hasLegacyToolList && (
+          <div className="mb-2">
+            <ToolProgressChips events={toolProgress} />
+            {awaitingAnswerOnly && (
+              <div className="mt-1.5 inline-flex items-center gap-2 text-[11px] text-muted-foreground">
+                <span className="hermes-thinking-dot" aria-hidden="true" />
+                <span>Generating answer…</span>
+              </div>
+            )}
+          </div>
+        )}
+        {hasTimeline ? (
+          (() => {
+            // Only the very last text item can still be receiving tokens —
+            // earlier text items were closed off when a tool call landed
+            // after them. Marking those earlier items as `isAnimating`
+            // leaves a stray caret on every paragraph the agent ever
+            // spoke, which reads as "still generating" forever.
+            let lastTextId: string | null = null;
+            for (let i = timeline.length - 1; i >= 0; i--) {
+              const it = timeline[i];
+              if (it.kind === "text") {
+                lastTextId = it.id;
+                break;
+              }
+            }
+            return (
+              <div className="flex flex-col gap-2">
+                {timeline.map((item) => {
+                  if (item.kind === "text") {
+                    if (!item.text.trim()) return null;
+                    const isLive =
+                      !!m.streaming && item.id === lastTextId;
+                    return (
+                      <Streamdown
+                        key={item.id}
+                        mode={isLive ? "streaming" : "static"}
+                        parseIncompleteMarkdown
+                        caret="circle"
+                        isAnimating={isLive}
+                        className="chat-md break-words"
+                      >
+                        {item.text}
+                      </Streamdown>
+                    );
+                  }
+                  const ev = progressMap.get(item.toolCallId);
+                  if (!ev) return null;
+                  return <ToolChip key={item.id} event={ev} />;
+                })}
+              </div>
+            );
+          })()
+        ) : (
+          bodyText.trim().length > 0 && (
+            <Streamdown
+              mode="streaming"
+              parseIncompleteMarkdown
+              caret="circle"
+              isAnimating={!!m.streaming}
+              className="chat-md break-words"
+            >
+              {bodyText}
+            </Streamdown>
+          )
+        )}
         {/*
           Persist-to-bubble teleport chip for delegate-and-forget runs.
           Stamped on the message after the stream resolves (see send()),

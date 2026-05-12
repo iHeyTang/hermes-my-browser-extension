@@ -1,12 +1,11 @@
 /**
  * Resolve the concrete `(windowId, tabId)` a tool call should land on,
- * based on `state.runTarget`.
+ * based on `state.runTarget` (kept in sync from the side panel **Open**
+ * menu, `my_browser_navigate`, and promote-to-user flows).
  *
- *   - "agent" → the dedicated background agent window (legacy default).
- *   - "user"  → the tab the user pinned when they flipped the toggle,
- *               falling back to whatever non-agent tab is currently
- *               active (the user's actual focus) if the pinned tab is
- *               gone.
+ *   - "agent" → the dedicated background agent window.
+ *   - "user"  → pinned user tab / active tab in that window, then last
+ *               focused non-agent tab (see implementation).
  *
  * We don't expose a "mirror" mode here. Replaying agent navigates into
  * a parallel user tab only mirrors the URL — page state (form values,
@@ -104,6 +103,6 @@ export async function resolveUserTab(): Promise<ResolvedTab> {
 
   throw new Error(
     "No user tab available — the pinned tab and its window are gone. " +
-      "Switch run mode back to Background or open a normal tab.",
+      "Switch Open to Agent (or Auto with an agent tab) or open a normal tab.",
   );
 }

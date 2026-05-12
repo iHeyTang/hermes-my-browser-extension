@@ -11,6 +11,6 @@ Hermes can control a **separate Chrome window** in your normal profile (no autom
 2. **Gateway** — `hermes gateway restart`, then open the extension → **side panel** → tap **● Offline** until **● Online**.
 3. **Side panel sign-in** — if chat shows errors, set `API_SERVER_ENABLED`, `API_SERVER_KEY`, and `API_SERVER_CORS_ORIGINS=*` in `~/.hermes/.env`, restart the gateway, and paste the same API key under **Options → Settings** in the extension. Ask Hermes or see the [README](./README.md) install doc for the exact one-liner.
 
-Optional: `@my_browser_connect` then `@my_browser_navigate url=https://example.com` to confirm the agent window.
+Optional: open the extension side panel, go **Online**, set **Open** (Auto / Agent / New tab / Same tab), then `@my_browser_navigate url=https://example.com` to confirm navigation.
 
 More detail when you need it: [README](./README.md) · [DEVELOPER.md](./DEVELOPER.md) · [docs/AGENT_INSTALL.md](./docs/AGENT_INSTALL.md)

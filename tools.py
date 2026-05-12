@@ -58,32 +58,6 @@ _req_id = 0
 # Schema definitions — kept minimal; the extension does the real work.
 # ---------------------------------------------------------------------------
 
-MY_BROWSER_CONNECT_SCHEMA = {
-    "name": "my_browser_connect",
-    "description": (
-        "Open (or attach to) a dedicated background Chrome window for the agent. "
-        "Does not touch the user's other tabs/windows. Optionally start at a URL."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "url": {
-                "type": "string",
-                "description": "Optional initial URL for the agent tab. Default: about:blank.",
-            },
-            "width": {"type": "integer", "description": "Window width (px). Default 1280."},
-            "height": {"type": "integer", "description": "Window height (px). Default 800."},
-        },
-        "required": [],
-    },
-}
-
-MY_BROWSER_DISCONNECT_SCHEMA = {
-    "name": "my_browser_disconnect",
-    "description": "Close the agent window and disconnect from the bridge.",
-    "parameters": {"type": "object", "properties": {}, "required": []},
-}
-
 MY_BROWSER_STATUS_SCHEMA = {
     "name": "my_browser_status",
     "description": "Report bridge connection state and agent window URL/title.",
@@ -92,11 +66,31 @@ MY_BROWSER_STATUS_SCHEMA = {
 
 MY_BROWSER_NAVIGATE_SCHEMA = {
     "name": "my_browser_navigate",
-    "description": "Navigate the agent tab to a URL. Waits for load to complete by default.",
+    "description": (
+        "Open a URL in the browser surface Hermes is driving. "
+        "The extension must be Online (side panel); the agent window is created when you connect there. "
+        "The side panel **Open** control (Auto / Agent / New tab / Same tab) wins when it is not Auto; "
+        "when it is Auto, the default is to navigate the user's current tab in place — the same "
+        "thing the user would expect from typing the URL in their address bar. Pass `open_in=agent` "
+        "to keep work in a hidden background window instead (e.g. multi-step research where you "
+        "don't want to disturb the user's tab)."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "Target URL."},
+            "open_in": {
+                "type": "string",
+                "enum": ["auto", "agent", "user_new_tab", "user_same_tab"],
+                "default": "auto",
+                "description": (
+                    "Used only when the side panel Open policy is **Auto**. Default `auto` "
+                    "replaces the user's current tab — this is what a direct user request like "
+                    "'open <site>' means. Use `agent` for background research that should stay "
+                    "out of the user's way; `user_new_tab` to keep the current tab and open "
+                    "alongside it; `user_same_tab` is identical to `auto` and exists for clarity."
+                ),
+            },
             "wait_for_load": {
                 "type": "boolean",
                 "description": "Block until the page reports complete (default true).",
@@ -214,6 +208,50 @@ MY_BROWSER_GET_TEXT_SCHEMA = {
     },
 }
 
+MY_BROWSER_ACTIVE_TAB_SCHEMA = {
+    "name": "my_browser_active_tab",
+    "description": (
+        "Read the user's currently focused browser tab — URL, title, and "
+        "visible text. Use this whenever the user refers to 'this page', "
+        "'what I'm looking at', or any context that implies their current "
+        "tab. Cheaper than navigating: no page load, just inspection. "
+        "Text is truncated past ~16k chars."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+MY_BROWSER_LIST_TABS_SCHEMA = {
+    "name": "my_browser_list_tabs",
+    "description": (
+        "List the user's open browser tabs (tab_id, url, title, active, "
+        "pinned). Use this when the user refers to 'the X tab', 'my other "
+        "tab', or asks to compare/aggregate across pages. The agent's own "
+        "background window is excluded. Pair with my_browser_read_tab to "
+        "actually fetch a tab's contents."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+MY_BROWSER_READ_TAB_SCHEMA = {
+    "name": "my_browser_read_tab",
+    "description": (
+        "Read a specific user tab's URL/title/text by tab_id (obtained from "
+        "my_browser_list_tabs). Use this when you've decided which of "
+        "several tabs to inspect. For the currently focused tab use "
+        "my_browser_active_tab — it's a single round-trip."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "tab_id": {
+                "type": "integer",
+                "description": "Tab id from my_browser_list_tabs.",
+            },
+        },
+        "required": ["tab_id"],
+    },
+}
+
 MY_BROWSER_SESSION_SAVE_SCHEMA = {
     "name": "my_browser_session_save",
     "description": (
@@ -271,78 +309,49 @@ MY_BROWSER_USERSCRIPT_LIST_SCHEMA = {
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
-MY_BROWSER_USERSCRIPT_GET_SCHEMA = {
-    "name": "my_browser_userscript_get",
-    "description": "Return the source code and full metadata for a single userscript.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "description": "Userscript id (from list)."},
-        },
-        "required": ["id"],
-    },
-}
-
-MY_BROWSER_USERSCRIPT_INSTALL_SCHEMA = {
-    "name": "my_browser_userscript_install",
+MY_BROWSER_USERSCRIPT_MANAGE_SCHEMA = {
+    "name": "my_browser_userscript_manage",
     "description": (
-        "Install a new userscript. Provide either `source` (the full text "
-        "including the ==UserScript== header) or `url` (a remote .user.js to "
-        "fetch). Returns the parsed metadata + assigned id."
+        "Manage userscripts in the browser extension. Pick one `action`:\n"
+        "  - `get`: fetch source + metadata for a single script. Requires `id`.\n"
+        "  - `install`: install a new script. Provide `source` (full text "
+        "including ==UserScript== header) OR `url` (remote .user.js to fetch); "
+        "optional `enabled` (default true). Returns the parsed metadata + assigned id.\n"
+        "  - `save`: replace the source of an existing script. Requires `id` and `source`. "
+        "Re-parses the metadata block.\n"
+        "  - `remove`: uninstall a script and drop its cached @require/@resource entries. "
+        "Requires `id`.\n"
+        "  - `set_enabled`: enable or disable a script without removing it. "
+        "Requires `id` and `enabled`.\n"
+        "Use my_browser_userscript_list first to discover ids. To execute a script, "
+        "use my_browser_userscript_run."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "source": {"type": "string", "description": "Full userscript source."},
-            "url": {"type": "string", "description": "Remote .user.js URL."},
+            "action": {
+                "type": "string",
+                "enum": ["get", "install", "save", "remove", "set_enabled"],
+                "description": "Operation to perform.",
+            },
+            "id": {
+                "type": "string",
+                "description": "Userscript id. Required for get/save/remove/set_enabled.",
+            },
+            "source": {
+                "type": "string",
+                "description": "Full userscript source. Required for save; one of source/url required for install.",
+            },
+            "url": {
+                "type": "string",
+                "description": "Remote .user.js URL (install only; alternative to source).",
+            },
             "enabled": {
                 "type": "boolean",
-                "description": "Enable on install (default true).",
-                "default": True,
+                "description": "Enabled flag. Default true for install; required for set_enabled.",
             },
         },
-        "required": [],
-    },
-}
-
-MY_BROWSER_USERSCRIPT_SAVE_SCHEMA = {
-    "name": "my_browser_userscript_save",
-    "description": "Replace the source of an existing userscript. Re-parses the metadata block.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "description": "Existing userscript id."},
-            "source": {"type": "string", "description": "New source text."},
-        },
-        "required": ["id", "source"],
-    },
-}
-
-MY_BROWSER_USERSCRIPT_REMOVE_SCHEMA = {
-    "name": "my_browser_userscript_remove",
-    "description": "Uninstall a userscript and drop its cached @require/@resource entries.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "description": "Userscript id."},
-        },
-        "required": ["id"],
-    },
-}
-
-MY_BROWSER_USERSCRIPT_SET_ENABLED_SCHEMA = {
-    "name": "my_browser_userscript_set_enabled",
-    "description": "Enable or disable a userscript without removing it.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "description": "Userscript id."},
-            "enabled": {
-                "type": "boolean",
-                "description": "True to enable, false to disable.",
-            },
-        },
-        "required": ["id", "enabled"],
+        "required": ["action"],
     },
 }
 
@@ -374,70 +383,6 @@ MY_BROWSER_CHAT_URL_SCHEMA = {
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
-
-MY_BROWSER_LEARN_START_SCHEMA = {
-    "name": "my_browser_learn_start",
-    "description": (
-        "Start recording user actions (clicks, typing, form submit, navigations) "
-        "on a single Chrome tab for demonstration learning / RPA. "
-        "Use scope=last_focused to record the user's normal browser tab (the window "
-        "they last focused). Use scope=agent to record the dedicated agent tab. "
-        "The user may also start recording from the Hermes side panel."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "scope": {
-                "type": "string",
-                "enum": ["last_focused", "agent"],
-                "description": (
-                    "Which tab to attach: last_focused = active tab in the last "
-                    "focused browser window; agent = the agent window tab "
-                    "(requires my_browser_connect first)."
-                ),
-                "default": "last_focused",
-            },
-            "tab_id": {
-                "type": "integer",
-                "description": "Optional explicit Chrome tab id; overrides scope when valid.",
-            },
-        },
-        "required": [],
-    },
-}
-
-MY_BROWSER_LEARN_STOP_SCHEMA = {
-    "name": "my_browser_learn_stop",
-    "description": (
-        "Stop learn-mode recording and return the trace JSON (events with URLs, "
-        "selectors, values). After this tool returns, analyze the trace: summarize "
-        "the user's goal, choose strategy 'tools' (my_browser_* steps) vs "
-        "'userscript' (single Tampermonkey-style script), and produce an executable "
-        "artifact. Follow agent_instruction_zh in the result for the exact output shape."
-    ),
-    "parameters": {"type": "object", "properties": {}, "required": []},
-}
-
-MY_BROWSER_LEARN_STATUS_SCHEMA = {
-    "name": "my_browser_learn_status",
-    "description": (
-        "Return whether learn-mode recording is active, the target tab id, "
-        "and how many events have been captured so far."
-    ),
-    "parameters": {"type": "object", "properties": {}, "required": []},
-}
-
-_LEARN_TRACE_AGENT_INSTRUCTION_ZH = (
-    "请阅读附件中的 learn_trace JSON 文件，然后：\n"
-    "1. 用简短中文概括用户操作目的与步骤。\n"
-    "2. 选择执行策略 `tools`（逐步调用 my_browser_navigate / click / type / eval 等）"
-    "或 `userscript`（生成可安装的单文件用户脚本），说明理由。\n"
-    "3. 产出可自动化回放的内容：若选 tools，给出有序步骤（每步含建议参数）；"
-    "若选 userscript，给出完整脚本（含合适的 @match）。\n"
-    "请只输出一个 JSON 对象，字段：strategy（\"tools\"|\"userscript\"）、"
-    "rationale（string）、risks（string[]）、artifact（object 或 string，依策略而定）。"
-)
-
 
 # ---------------------------------------------------------------------------
 # Gating
@@ -786,47 +731,6 @@ def _on_session_end(**kwargs: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _handle_my_browser_connect(args: dict, **kw: Any) -> str:
-    """Open (or attach to) the dedicated agent window."""
-    args = args or {}
-    params: Dict[str, Any] = {}
-    for k in ("url", "width", "height"):
-        if args.get(k) is not None:
-            params[k] = args[k]
-
-    resp = _send("connect", params, timeout=15.0)
-    ok, body = _unwrap(resp)
-    if not ok:
-        return tool_error(f"my_browser_connect: {body}")
-
-    return tool_result({
-        "success": True,
-        "agent_window_id": body.get("windowId"),
-        "agent_tab_id": body.get("tabId"),
-        "url": body.get("url"),
-        "title": body.get("title"),
-        "newly_created": body.get("created", False),
-        "message": (
-            "Agent window ready. " +
-            ("Newly created." if body.get("created") else "Reused existing.")
-        ),
-    })
-
-
-def _handle_my_browser_disconnect(args: dict, **kw: Any) -> str:
-    """Close the agent window and disconnect."""
-    resp = _send("disconnect", {}, timeout=10.0)
-    ok, body = _unwrap(resp)
-    _close_ws_sync()
-    if not ok:
-        # Soft fail: bridge may already be down. Still report success on our side.
-        return tool_result({
-            "success": True,
-            "message": f"Disconnected (bridge note: {body}).",
-        })
-    return tool_result({"success": True, "message": "Agent window closed."})
-
-
 def _handle_my_browser_status(args: dict, **kw: Any) -> str:
     """Report current connection + agent window state."""
     bridge_open = _is_ws_open(_ws_connection)
@@ -835,7 +739,10 @@ def _handle_my_browser_status(args: dict, **kw: Any) -> str:
         return tool_result({
             "bridge_connected": False,
             "agent_window": None,
-            "message": "Bridge not connected. Run my_browser_connect first.",
+            "message": (
+                "Bridge WebSocket from Hermes is not open. "
+                "Open the Hermes Browser Extension side panel and go Online first."
+            ),
         })
 
     resp = _send("status", {}, timeout=5.0)
@@ -850,11 +757,19 @@ def _handle_my_browser_navigate(args: dict, **kw: Any) -> str:
     url = args.get("url") or ""
     wait_for_load = bool(args.get("wait_for_load", True))
     timeout_ms = int(args.get("timeout_ms") or 30000)
+    open_in = args.get("open_in") or "auto"
+    if open_in not in ("auto", "agent", "user_new_tab", "user_same_tab"):
+        open_in = "auto"
     if not url:
         return tool_error("my_browser_navigate: url is required")
     resp = _send(
         "navigate",
-        {"url": url, "wait_for_load": wait_for_load, "timeout_ms": timeout_ms},
+        {
+            "url": url,
+            "open_in": open_in,
+            "wait_for_load": wait_for_load,
+            "timeout_ms": timeout_ms,
+        },
         timeout=max(15.0, timeout_ms / 1000.0 + 5.0),
     )
     ok, body = _unwrap(resp)
@@ -865,6 +780,10 @@ def _handle_my_browser_navigate(args: dict, **kw: Any) -> str:
         "url": body.get("url"),
         "title": body.get("title"),
         "status": body.get("status"),
+        "open_in": body.get("open_in"),
+        "created_tab": body.get("created_tab"),
+        "tab_id": body.get("tab_id"),
+        "target": body.get("target"),
     })
 
 
@@ -972,6 +891,56 @@ def _handle_my_browser_get_text(args: dict, **kw: Any) -> str:
     if not ok:
         return tool_error(f"my_browser_get_text: {body}")
     return tool_result({"success": True, "text": body.get("text")})
+
+
+def _handle_my_browser_active_tab(args: dict, **kw: Any) -> str:
+    resp = _send("active_tab", {}, timeout=15.0)
+    ok, body = _unwrap(resp)
+    if not ok:
+        return tool_error(f"my_browser_active_tab: {body}")
+    return tool_result({
+        "success": True,
+        "tab_id": body.get("tab_id"),
+        "window_id": body.get("window_id"),
+        "url": body.get("url"),
+        "title": body.get("title"),
+        "text": body.get("text"),
+        "truncated": body.get("truncated", False),
+        "full_length": body.get("full_length", 0),
+    })
+
+
+def _handle_my_browser_list_tabs(args: dict, **kw: Any) -> str:
+    resp = _send("list_tabs", {}, timeout=10.0)
+    ok, body = _unwrap(resp)
+    if not ok:
+        return tool_error(f"my_browser_list_tabs: {body}")
+    return tool_result({"success": True, "tabs": body.get("tabs", [])})
+
+
+def _handle_my_browser_read_tab(args: dict, **kw: Any) -> str:
+    args = args or {}
+    tab_id = args.get("tab_id")
+    if tab_id is None:
+        return tool_error("my_browser_read_tab: tab_id is required")
+    try:
+        tab_id_int = int(tab_id)
+    except (TypeError, ValueError):
+        return tool_error("my_browser_read_tab: tab_id must be an integer")
+    resp = _send("read_tab", {"tab_id": tab_id_int}, timeout=15.0)
+    ok, body = _unwrap(resp)
+    if not ok:
+        return tool_error(f"my_browser_read_tab: {body}")
+    return tool_result({
+        "success": True,
+        "tab_id": body.get("tab_id"),
+        "window_id": body.get("window_id"),
+        "url": body.get("url"),
+        "title": body.get("title"),
+        "text": body.get("text"),
+        "truncated": body.get("truncated", False),
+        "full_length": body.get("full_length", 0),
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1298,90 +1267,84 @@ def _handle_my_browser_userscript_list(args: dict, **kw: Any) -> str:
     })
 
 
-def _handle_my_browser_userscript_get(args: dict, **kw: Any) -> str:
+def _handle_my_browser_userscript_manage(args: dict, **kw: Any) -> str:
     args = args or {}
+    action = (args.get("action") or "").strip()
     sid = args.get("id") or ""
-    if not sid:
-        return tool_error("my_browser_userscript_get: id is required")
-    resp = _send("userscript.get", {"id": sid}, timeout=10.0)
-    ok, body = _unwrap(resp)
-    if not ok:
-        return tool_error(f"my_browser_userscript_get: {body}")
-    return tool_result({"success": True, "script": body.get("script")})
+    prefix = f"my_browser_userscript_manage({action or '?'})"
 
+    if action == "get":
+        if not sid:
+            return tool_error(f"{prefix}: id is required")
+        resp = _send("userscript.get", {"id": sid}, timeout=10.0)
+        ok, body = _unwrap(resp)
+        if not ok:
+            return tool_error(f"{prefix}: {body}")
+        return tool_result({"success": True, "script": body.get("script")})
 
-def _handle_my_browser_userscript_install(args: dict, **kw: Any) -> str:
-    args = args or {}
-    source = args.get("source")
-    url = args.get("url")
-    enabled = bool(args.get("enabled", True))
-    if not source and not url:
-        return tool_error(
-            "my_browser_userscript_install: provide `source` or `url`"
+    if action == "install":
+        source = args.get("source")
+        url = args.get("url")
+        enabled = bool(args.get("enabled", True))
+        if not source and not url:
+            return tool_error(f"{prefix}: provide `source` or `url`")
+        params: Dict[str, Any] = {"enabled": enabled}
+        if isinstance(source, str) and source:
+            params["source"] = source
+        if isinstance(url, str) and url:
+            params["url"] = url
+        resp = _send("userscript.install", params, timeout=30.0)
+        ok, body = _unwrap(resp)
+        if not ok:
+            return tool_error(f"{prefix}: {body}")
+        s = body.get("script") or {}
+        return tool_result({
+            "success": True,
+            "id": s.get("id"),
+            "name": (s.get("meta") or {}).get("name"),
+            "version": (s.get("meta") or {}).get("version"),
+            "enabled": s.get("enabled"),
+            "matches": (s.get("meta") or {}).get("match"),
+            "message": f"Installed userscript {(s.get('meta') or {}).get('name')!r}.",
+        })
+
+    if action == "save":
+        source = args.get("source") or ""
+        if not sid or not source:
+            return tool_error(f"{prefix}: id and source are required")
+        resp = _send("userscript.save", {"id": sid, "source": source}, timeout=15.0)
+        ok, body = _unwrap(resp)
+        if not ok:
+            return tool_error(f"{prefix}: {body}")
+        return tool_result({"success": True, "script": body.get("script")})
+
+    if action == "remove":
+        if not sid:
+            return tool_error(f"{prefix}: id is required")
+        resp = _send("userscript.remove", {"id": sid}, timeout=10.0)
+        ok, body = _unwrap(resp)
+        if not ok:
+            return tool_error(f"{prefix}: {body}")
+        return tool_result({"success": True, "removed": body.get("removed")})
+
+    if action == "set_enabled":
+        if not sid:
+            return tool_error(f"{prefix}: id is required")
+        enabled = bool(args.get("enabled", True))
+        resp = _send(
+            "userscript.setEnabled",
+            {"id": sid, "enabled": enabled},
+            timeout=10.0,
         )
-    params: Dict[str, Any] = {"enabled": enabled}
-    if isinstance(source, str) and source:
-        params["source"] = source
-    if isinstance(url, str) and url:
-        params["url"] = url
-    resp = _send("userscript.install", params, timeout=30.0)
-    ok, body = _unwrap(resp)
-    if not ok:
-        return tool_error(f"my_browser_userscript_install: {body}")
-    s = body.get("script") or {}
-    return tool_result({
-        "success": True,
-        "id": s.get("id"),
-        "name": (s.get("meta") or {}).get("name"),
-        "version": (s.get("meta") or {}).get("version"),
-        "enabled": s.get("enabled"),
-        "matches": (s.get("meta") or {}).get("match"),
-        "message": f"Installed userscript {(s.get('meta') or {}).get('name')!r}.",
-    })
+        ok, body = _unwrap(resp)
+        if not ok:
+            return tool_error(f"{prefix}: {body}")
+        return tool_result({"success": True, "script": body.get("script")})
 
-
-def _handle_my_browser_userscript_save(args: dict, **kw: Any) -> str:
-    args = args or {}
-    sid = args.get("id") or ""
-    source = args.get("source") or ""
-    if not sid or not source:
-        return tool_error("my_browser_userscript_save: id and source are required")
-    resp = _send("userscript.save", {"id": sid, "source": source}, timeout=15.0)
-    ok, body = _unwrap(resp)
-    if not ok:
-        return tool_error(f"my_browser_userscript_save: {body}")
-    return tool_result({"success": True, "script": body.get("script")})
-
-
-def _handle_my_browser_userscript_remove(args: dict, **kw: Any) -> str:
-    args = args or {}
-    sid = args.get("id") or ""
-    if not sid:
-        return tool_error("my_browser_userscript_remove: id is required")
-    resp = _send("userscript.remove", {"id": sid}, timeout=10.0)
-    ok, body = _unwrap(resp)
-    if not ok:
-        return tool_error(f"my_browser_userscript_remove: {body}")
-    return tool_result({"success": True, "removed": body.get("removed")})
-
-
-def _handle_my_browser_userscript_set_enabled(args: dict, **kw: Any) -> str:
-    args = args or {}
-    sid = args.get("id") or ""
-    enabled = bool(args.get("enabled", True))
-    if not sid:
-        return tool_error(
-            "my_browser_userscript_set_enabled: id is required"
-        )
-    resp = _send(
-        "userscript.setEnabled",
-        {"id": sid, "enabled": enabled},
-        timeout=10.0,
+    return tool_error(
+        f"my_browser_userscript_manage: unknown action {action!r}; "
+        "expected one of get/install/save/remove/set_enabled"
     )
-    ok, body = _unwrap(resp)
-    if not ok:
-        return tool_error(f"my_browser_userscript_set_enabled: {body}")
-    return tool_result({"success": True, "script": body.get("script")})
 
 
 def _handle_my_browser_userscript_run(args: dict, **kw: Any) -> str:
@@ -1440,70 +1403,6 @@ def _read_gateway_config() -> Dict[str, Any]:
         return yaml.safe_load(cfg_path.read_text()) or {}
     except Exception:
         return {}
-
-
-def _handle_my_browser_learn_start(args: dict, **kw: Any) -> str:
-    args = args or {}
-    scope = args.get("scope") or "last_focused"
-    if scope not in ("last_focused", "agent"):
-        scope = "last_focused"
-    params: Dict[str, Any] = {"scope": scope}
-    tid = args.get("tab_id")
-    if tid is not None:
-        try:
-            params["tab_id"] = int(tid)
-        except (TypeError, ValueError):
-            return tool_error("my_browser_learn_start: tab_id must be an integer")
-    resp = _send("learn_start", params, timeout=15.0)
-    ok, body = _unwrap(resp)
-    if not ok:
-        return tool_error(f"my_browser_learn_start: {body}")
-    return tool_result({
-        "success": True,
-        "recording": bool(body.get("active")),
-        "tab_id": body.get("tabId"),
-        "event_count": body.get("eventCount", 0),
-        "message": "Recording started. User demonstrates on the target tab; call my_browser_learn_stop when done.",
-    })
-
-
-def _handle_my_browser_learn_stop(args: dict, **kw: Any) -> str:
-    resp = _send("learn_stop", {}, timeout=15.0)
-    ok, body = _unwrap(resp)
-    if not ok:
-        return tool_error(f"my_browser_learn_stop: {body}")
-    trace = body.get("trace")
-    if trace is None:
-        return tool_result({
-            "success": True,
-            "recording": False,
-            "trace": None,
-            "message": body.get("message") or "Not recording.",
-        })
-    return tool_result({
-        "success": True,
-        "recording": False,
-        "trace": trace,
-        "agent_instruction_zh": _LEARN_TRACE_AGENT_INSTRUCTION_ZH,
-        "message": (
-            "Trace returned. Analyze it and emit one JSON object "
-            "(strategy, rationale, risks, artifact) per agent_instruction_zh."
-        ),
-    })
-
-
-def _handle_my_browser_learn_status(args: dict, **kw: Any) -> str:
-    resp = _send("learn_status", {}, timeout=5.0)
-    ok, body = _unwrap(resp)
-    if not ok:
-        return tool_error(f"my_browser_learn_status: {body}")
-    return tool_result({
-        "success": True,
-        "recording": bool(body.get("active")),
-        "tab_id": body.get("tabId"),
-        "started_at": body.get("startedAt"),
-        "event_count": body.get("eventCount", 0),
-    })
 
 
 def _handle_my_browser_chat_url(args: dict, **kw: Any) -> str:

@@ -1,9 +1,14 @@
 /**
- * Hermes CLI main model — ~/.hermes/config.yaml `model:` (same as `hermes model`).
- * Model catalog — curated lists from Hermes docs JSON + ~/.hermes/cache (bridge HTTP).
+ * Hermes model management client.
+ *
+ * Primary surface: ``GET/POST /hermes/main-provider-settings`` (main model +
+ * credentials as one business resource). Other ``/hermes/*`` routes cover
+ * catalog, auxiliary slots, env status, and attach uploads.
  */
 
-import { ATTACHMENT_HTTP_BASE } from "../background/config";
+import {
+  ATTACHMENT_HTTP_BASE,
+} from "../background/config";
 
 export interface HermesAgentMainModelResponse {
   ok: boolean;
@@ -42,52 +47,38 @@ export interface HermesModelCatalogResponse {
   providers?: Record<string, HermesCatalogProviderBlock>;
   provider_ids?: string[];
   config_provider_ids?: string[];
-  /** Slugs whose Hermes profile env vars are non-empty in the bridge process (e.g. plugin ``.env``). */
+  /** Slugs whose configured provider credentials are available in the current runtime. */
   env_ready_provider_ids?: string[];
-  /** Present when bridge runs with Hermes Agent on PYTHONPATH. */
+  /** Canonical provider list exposed by Hermes. */
   canonical_providers?: HermesCanonicalProviderEntry[];
   canonical_loaded?: boolean;
-  /** Hermes ``ProviderProfile.env_vars`` per slug (from ``providers`` plugins). */
+  /** Provider credential variable names by provider slug. */
   provider_env_vars?: Record<string, string[]>;
   warning?: string;
 }
 
-/** Bridge process: which profile env vars are set (no secret values). */
-export interface HermesProviderEnvVarStatus {
-  name: string;
-  set: boolean;
-  length: number;
+/** Nested credential slice from ``GET /hermes/main-provider-settings``. */
+export interface HermesMainProviderSettingsCredentials {
+  provider: string;
+  keys: string[];
+  values: Record<string, string>;
 }
 
-export interface HermesProviderEnvStatusResponse {
-  ok: boolean;
-  error?: string;
-  provider?: string;
-  env_vars?: HermesProviderEnvVarStatus[];
+/** ``GET /hermes/main-provider-settings`` — main model + credentials for one business view. */
+export interface HermesMainProviderSettingsResponse extends HermesAgentMainModelResponse {
+  credentials?: HermesMainProviderSettingsCredentials;
 }
 
-export interface HermesDotenvGetResponse {
-  ok: boolean;
-  error?: string;
-  values?: Record<string, string>;
-}
-
-export interface HermesDotenvPostResponse {
-  ok: boolean;
-  error?: string;
-  updated?: string[];
-}
-
-/** Per-provider list from bridge — `hermes_cli.models.curated_models_for_provider`. */
+/** Per-provider model list resolved from `/api/model/options`. */
 export interface HermesProviderModelsResponse {
   ok: boolean;
   error?: string;
   provider?: string;
   models?: HermesCatalogModelEntry[];
-  /** `hermes_cli` | `manifest` | `none` | `skipped` */
+  /** Source tag kept for compatibility with existing callers. */
   source?: string;
   cli_loaded?: boolean;
-  /** True when Hermes CLI returned live pricing (e.g. OpenRouter / Nous / AI Gateway). */
+  /** Optional field kept for backward-compatible typing. */
   pricing_loaded?: boolean;
 }
 
@@ -95,17 +86,84 @@ function stripSlash(b: string): string {
   return b.endsWith("/") ? b.slice(0, -1) : b;
 }
 
-export async function getHermesAgentMainModel(): Promise<HermesAgentMainModelResponse> {
-  const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/main-model`;
+function responseError(res: Response, data: { error?: string } | null | undefined): string {
+  return (data && typeof data.error === "string" && data.error) || `${res.status} ${res.statusText}`;
+}
+
+export async function getHermesMainProviderSettings(
+  credentialsForProvider?: string,
+): Promise<HermesMainProviderSettingsResponse> {
+  const p = credentialsForProvider?.trim();
+  const q =
+    p && p !== "auto"
+      ? `?provider=${encodeURIComponent(p)}`
+      : "";
   try {
+    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/main-provider-settings${q}`;
     const res = await fetch(url, { method: "GET" });
+    const data = (await res.json()) as HermesMainProviderSettingsResponse;
+    if (!res.ok || data.ok === false) {
+      return {
+        ok: false,
+        error: responseError(res, data),
+      };
+    }
+    const cred = data.credentials ?? {
+      provider: "",
+      keys: [],
+      values: {},
+    };
+    return {
+      ...data,
+      ok: true,
+      credentials: {
+        provider: cred.provider,
+        keys: cred.keys ?? [],
+        values: cred.values ?? {},
+      },
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      error: String((e as Error)?.message || e),
+    };
+  }
+}
+
+/** @deprecated Prefer ``getHermesMainProviderSettings`` — thin wrapper without ``credentials``. */
+export async function getHermesAgentMainModel(): Promise<HermesAgentMainModelResponse> {
+  const r = await getHermesMainProviderSettings();
+  if (!r.ok) {
+    return { ok: false, error: r.error };
+  }
+  return {
+    ok: true,
+    config_path: r.config_path,
+    config_exists: r.config_exists,
+    provider: r.provider,
+    model: r.model,
+    base_url: r.base_url,
+    error: r.error,
+  };
+}
+
+export async function setHermesAgentMainModel(patch: {
+  provider?: string;
+  model?: string;
+  base_url?: string | null;
+}): Promise<HermesAgentMainModelResponse> {
+  try {
+    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/main-model`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
     const data = (await res.json()) as HermesAgentMainModelResponse;
     if (!res.ok || data.ok === false) {
       return {
         ok: false,
-        error:
-          (data && typeof data.error === "string" && data.error) ||
-          `${res.status} ${res.statusText}`,
+        error: responseError(res, data),
       };
     }
     return { ...data, ok: true };
@@ -117,25 +175,25 @@ export async function getHermesAgentMainModel(): Promise<HermesAgentMainModelRes
   }
 }
 
-export async function setHermesAgentMainModel(patch: {
+/** Save main model (``config.yaml``) and optional plugin credentials in one request. */
+export async function saveHermesMainProviderSettings(body: {
   provider?: string;
   model?: string;
   base_url?: string | null;
+  credentials?: Record<string, string> | null;
 }): Promise<HermesAgentMainModelResponse> {
-  const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/main-model`;
   try {
+    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/main-provider-settings`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
+      body: JSON.stringify(body),
     });
     const data = (await res.json()) as HermesAgentMainModelResponse;
     if (!res.ok || data.ok === false) {
       return {
         ok: false,
-        error:
-          (data && typeof data.error === "string" && data.error) ||
-          `${res.status} ${res.statusText}`,
+        error: responseError(res, data),
       };
     }
     return { ...data, ok: true };
@@ -152,16 +210,14 @@ export async function getHermesModelCatalog(
   refresh = false,
 ): Promise<HermesModelCatalogResponse> {
   const q = refresh ? "?refresh=1" : "";
-  const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/model-catalog${q}`;
   try {
+    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/model-catalog${q}`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as HermesModelCatalogResponse;
     if (!res.ok || data.ok === false) {
       return {
         ok: false,
-        error:
-          (data && typeof data.error === "string" && data.error) ||
-          `${res.status} ${res.statusText}`,
+        error: responseError(res, data),
       };
     }
     return { ...data, ok: true };
@@ -173,92 +229,7 @@ export async function getHermesModelCatalog(
   }
 }
 
-/** Env var presence in bridge process (set + length only). */
-/** Read API key values from plugin ``.env`` (localhost only). */
-export async function getHermesDotenvValues(
-  keys: string[],
-): Promise<HermesDotenvGetResponse> {
-  const uniq = [...new Set(keys.map((k) => k.trim()).filter(Boolean))];
-  if (uniq.length === 0) {
-    return { ok: true, values: {} };
-  }
-  const qs = encodeURIComponent(uniq.join(","));
-  const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/dotenv?keys=${qs}`;
-  try {
-    const res = await fetch(url, { method: "GET" });
-    const data = (await res.json()) as HermesDotenvGetResponse;
-    if (!res.ok || data.ok === false) {
-      return {
-        ok: false,
-        error:
-          (data && typeof data.error === "string" && data.error) ||
-          `${res.status} ${res.statusText}`,
-      };
-    }
-    return { ...data, ok: true, values: data.values ?? {} };
-  } catch (e) {
-    return {
-      ok: false,
-      error: String((e as Error)?.message || e),
-    };
-  }
-}
-
-/** Merge key updates into plugin ``.env`` and bridge ``os.environ``. */
-export async function patchHermesDotenv(
-  updates: Record<string, string>,
-): Promise<HermesDotenvPostResponse> {
-  const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/dotenv`;
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ updates }),
-    });
-    const data = (await res.json()) as HermesDotenvPostResponse;
-    if (!res.ok || data.ok === false) {
-      return {
-        ok: false,
-        error:
-          (data && typeof data.error === "string" && data.error) ||
-          `${res.status} ${res.statusText}`,
-      };
-    }
-    return { ...data, ok: true };
-  } catch (e) {
-    return {
-      ok: false,
-      error: String((e as Error)?.message || e),
-    };
-  }
-}
-
-export async function getHermesProviderEnvStatus(
-  provider: string,
-): Promise<HermesProviderEnvStatusResponse> {
-  const p = encodeURIComponent(provider.trim());
-  const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/provider-env-status?provider=${p}`;
-  try {
-    const res = await fetch(url, { method: "GET" });
-    const data = (await res.json()) as HermesProviderEnvStatusResponse;
-    if (!res.ok || data.ok === false) {
-      return {
-        ok: false,
-        error:
-          (data && typeof data.error === "string" && data.error) ||
-          `${res.status} ${res.statusText}`,
-      };
-    }
-    return { ...data, ok: true };
-  } catch (e) {
-    return {
-      ok: false,
-      error: String((e as Error)?.message || e),
-    };
-  }
-}
-
-/** Model ids for one provider — same logic as `hermes model` after provider selection. */
+/** Model ids for one provider from `/api/model/options`. */
 export const AUXILIARY_SLOT_NAMES = [
   "vision",
   "web_extract",
@@ -299,16 +270,14 @@ export interface AuxiliaryModelsResponse {
 }
 
 export async function getHermesAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
-  const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/auxiliary-models`;
   try {
+    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/auxiliary-models`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as AuxiliaryModelsResponse;
     if (!res.ok || data.ok === false) {
       return {
         ok: false,
-        error:
-          (data && typeof data.error === "string" && data.error) ||
-          `${res.status} ${res.statusText}`,
+        error: responseError(res, data),
       };
     }
     return { ...data, ok: true };
@@ -324,8 +293,8 @@ export async function setHermesAuxiliarySlot(patch: {
   base_url?: string;
   api_key?: string;
 }): Promise<AuxiliaryModelsResponse> {
-  const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/auxiliary-models`;
   try {
+    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/auxiliary-models`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -335,9 +304,7 @@ export async function setHermesAuxiliarySlot(patch: {
     if (!res.ok || data.ok === false) {
       return {
         ok: false,
-        error:
-          (data && typeof data.error === "string" && data.error) ||
-          `${res.status} ${res.statusText}`,
+        error: responseError(res, data),
       };
     }
     return { ...data, ok: true };
@@ -350,18 +317,17 @@ export async function getHermesProviderModels(
   provider: string,
   refresh = false,
 ): Promise<HermesProviderModelsResponse> {
-  const p = encodeURIComponent(provider.trim());
-  const q = refresh ? "&refresh=1" : "";
-  const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/provider-models?provider=${p}${refresh ? q : ""}`;
+  const providerId = provider.trim();
   try {
+    const p = encodeURIComponent(providerId);
+    const q = refresh ? "&refresh=1" : "";
+    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/provider-models?provider=${p}${q}`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as HermesProviderModelsResponse;
     if (!res.ok || data.ok === false) {
       return {
         ok: false,
-        error:
-          (data && typeof data.error === "string" && data.error) ||
-          `${res.status} ${res.statusText}`,
+        error: responseError(res, data),
       };
     }
     return { ...data, ok: true };

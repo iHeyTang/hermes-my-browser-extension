@@ -27,13 +27,17 @@ import {
   refreshChatCorsRule,
   registerChatCorsListeners,
 } from "./chat-cors";
+import { registerChatPort } from "./chat/port";
+import { hydrateFromStorage as hydrateChatRuntime } from "./chat/state";
 import { HANDLERS } from "./handlers";
 import {
   getCurrentState,
   loadAgentState,
   loadDesiredConnected,
+  loadNavigateOpenPolicy,
   loadRunTarget,
   setDesiredConnected,
+  setNavigateOpenPolicy,
   setRunTarget,
   state,
   syncState,
@@ -66,6 +70,7 @@ import {
 registerAgentWindowListeners();
 registerRuntimeBridge();
 registerChatCorsListeners();
+registerChatPort();
 
 // Toolbar-icon click opens the side panel directly. We deliberately removed
 // the popup so the click lands on the chat surface in one step. Connection
@@ -94,6 +99,12 @@ async function bootstrap() {
   await loadAgentState();
   await loadDesiredConnected();
   await loadRunTarget();
+  await loadNavigateOpenPolicy();
+  // Pull any in-flight chat runtime back into memory before the side panel
+  // subscribes; if the SW was killed mid-stream the hydrate marks those
+  // sessions as `streaming: false` with an error so the panel renders them
+  // as interrupted instead of spinning forever.
+  await hydrateChatRuntime();
   syncState();
 
   try {
@@ -346,6 +357,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           runTarget: state.runTarget,
           navigatedTo,
         });
+      } catch (e) {
+        sendResponse({ ok: false, error: String((e as Error)?.message || e) });
+      }
+      return;
+    }
+
+    if (action === "navigateOpenPolicy.get") {
+      sendResponse({ ok: true, policy: state.navigateOpenPolicy });
+      return;
+    }
+
+    if (action === "navigateOpenPolicy.set") {
+      try {
+        const r = request as Record<string, unknown>;
+        await setNavigateOpenPolicy(r.policy);
+        sendResponse({ ok: true, policy: state.navigateOpenPolicy });
       } catch (e) {
         sendResponse({ ok: false, error: String((e as Error)?.message || e) });
       }

@@ -95,7 +95,24 @@ export function connect() {
     void handleCommand(event.data as string);
   };
 
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
+    if (ev.code !== 1000) {
+      const hint =
+        ev.code === 1006
+          ? "Code 1006 usually means the TCP connection failed (nothing listening on the port, or the bridge process exited immediately). Restart Hermes after updating the plugin, or run: `python -m bridge.server` from the plugin repo using the Hermes venv Python."
+          : "If the bridge is not running, start Hermes with this plugin or run `python -m bridge.server` (Hermes venv) from the plugin repo.";
+      console.warn(
+        "[hermes-bridge] WebSocket closed:",
+        {
+          code: ev.code,
+          reason: ev.reason || undefined,
+          wasClean: ev.wasClean,
+          url: BRIDGE_URL,
+        },
+        "—",
+        hint,
+      );
+    }
     state.ws = null;
     stopHeartbeat();
     // Anyone awaiting an in-flight outbound request needs to know the wire
@@ -105,8 +122,9 @@ export function connect() {
     syncState();
   };
 
-  ws.onerror = (err) => {
-    console.warn("[hermes-bridge] WebSocket error:", err);
+  ws.onerror = () => {
+    // Browsers omit the failure reason here; see onclose for code/reason/hint.
+    console.warn("[hermes-bridge] WebSocket error (details usually follow in onclose)");
   };
 }
 

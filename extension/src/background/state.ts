@@ -10,7 +10,12 @@
  * toolbar icon and the popup agree.
  */
 
-import type { ConnectionState, RunTarget, RunTargetState } from "~lib/types";
+import type {
+  ConnectionState,
+  NavigateOpenPolicy,
+  RunTarget,
+  RunTargetState,
+} from "~lib/types";
 
 import { applyIcon } from "./icon";
 
@@ -28,6 +33,12 @@ interface State {
    * mid-conversation choice; cleared automatically on Chrome restart.
    */
   runTarget: RunTargetState;
+  /**
+   * Side panel **Open** policy: drives `navigate` resolution and, when not
+   * Auto, pins `runTarget` so every browser tool uses the same surface.
+   * Persisted in chrome.storage.local.
+   */
+  navigateOpenPolicy: NavigateOpenPolicy;
 }
 
 export const state: State = {
@@ -42,6 +53,7 @@ export const state: State = {
     userTabId: null,
     userWindowId: null,
   },
+  navigateOpenPolicy: "auto",
 };
 
 // ---------------------------------------------------------------------------
@@ -134,10 +146,52 @@ export async function setRunTarget(next: Partial<RunTargetState>) {
   await saveRunTarget();
 }
 
+// ---------------------------------------------------------------------------
+// Navigate open policy (local storage — user preference)
+// ---------------------------------------------------------------------------
+
+const NAVIGATE_OPEN_POLICY_KEY = "settings.sidepanel.navigateOpenPolicy";
+
+function normalizeNavigateOpenPolicy(raw: unknown): NavigateOpenPolicy {
+  if (
+    raw === "agent" ||
+    raw === "user_new_tab" ||
+    raw === "user_same_tab"
+  ) {
+    return raw;
+  }
+  return "auto";
+}
+
+export async function loadNavigateOpenPolicy(): Promise<NavigateOpenPolicy> {
+  const r = await chrome.storage.local.get(NAVIGATE_OPEN_POLICY_KEY);
+  state.navigateOpenPolicy = normalizeNavigateOpenPolicy(
+    r[NAVIGATE_OPEN_POLICY_KEY],
+  );
+  return state.navigateOpenPolicy;
+}
+
+export async function setNavigateOpenPolicy(policy: unknown) {
+  state.navigateOpenPolicy = normalizeNavigateOpenPolicy(policy);
+  await chrome.storage.local.set({
+    [NAVIGATE_OPEN_POLICY_KEY]: state.navigateOpenPolicy,
+  });
+  broadcastNavigateOpenPolicy();
+}
+
+export function broadcastNavigateOpenPolicy() {
+  chrome.runtime
+    .sendMessage({
+      type: "hermes:navigate-open-policy-changed",
+      navigateOpenPolicy: state.navigateOpenPolicy,
+    })
+    .catch(() => {});
+}
+
 export function broadcastRunTarget() {
   // Same fire-and-forget pattern as `broadcastStatus`: the side panel may
-  // not be open. We surface the message so the panel's RunModeToggle can
-  // sync if some other surface (e.g. an in-flight promotion) changed it.
+  // not be open. We surface the message so the side panel can sync if some
+  // other surface (e.g. an in-flight promotion) changed it.
   chrome.runtime
     .sendMessage({
       type: "hermes:run-target-changed",

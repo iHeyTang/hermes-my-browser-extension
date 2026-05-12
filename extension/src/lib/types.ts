@@ -27,37 +27,22 @@ export interface AgentWindowInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Run target — where browser-control tool calls (navigate / click / type /
-// screenshot / eval / get_html / get_text) are dispatched.
+// Run target — internal routing for browser tools (`resolveTargetTab`).
+// The side panel **Open** menu (see `NavigateOpenPolicy`) keeps this in
+// sync: non-Auto pins agent vs user; Auto leaves it to `navigate` + model
+// `open_in` (defaulting to the agent window when still `open_in=auto`).
 //
-//   "agent"  — the dedicated background agent window (default; the legacy
-//              v0.3.0 behaviour). Nothing the user sees in their own
-//              browser is touched. The "Open in my browser →" chip on
-//              finished assistant bubbles is the honest way to inspect
-//              whatever page the agent ended up on.
-//   "user"   — the tab the user was on when they flipped the toggle (or
-//              the closest equivalent if it was closed since). Lets the
-//              user delegate the agent to drive the page they're already
-//              looking at.
-//
-// We deliberately don't expose a "mirror" mode that would replay every
-// agent navigate into the user's tab. Mirroring only copies URLs, but
-// page state (form values, scroll, in-memory JS state, login cookies
-// scoped to the tab's session, SPA route state…) is *local* to the tab
-// the agent is driving and cannot be reconstructed by navigating a
-// different tab to the same URL. A mirror mode would therefore look
-// like "watching the agent" while actually showing you a stale
-// look-alike, which is worse than no mirror at all.
+//   "agent"  — dedicated background agent window.
+//   "user"   — user's normal Chrome tab/window (`resolveUserTab`).
 // ---------------------------------------------------------------------------
 export type RunTarget = "agent" | "user";
 
 export interface RunTargetState {
   target: RunTarget;
   /**
-   * The tab the user pinned at the moment they switched to "user" mode.
-   * May be null when target is "agent". May point at a tab that has
-   * since been closed; resolvers fall back to the current active
-   * non-agent tab in that case.
+   * Pinned user tab when Open is New tab / Same tab (or Auto + user surface).
+   * Null when target is "agent". May be stale if the tab was closed;
+   * resolvers fall back to the active tab in `userWindowId` when possible.
    */
   userTabId: number | null;
   /**
@@ -67,6 +52,21 @@ export interface RunTargetState {
    */
   userWindowId: number | null;
 }
+
+/**
+ * Side panel **Open** — single user-facing control for where browser tools run.
+ *
+ * - `auto` — `my_browser_navigate.open_in` from the agent when concrete; if
+ *   omitted or `open_in=auto`, follow current `runTarget` (usually the agent
+ *   window until a navigate pins the user surface).
+ * - Any other value — forces that surface for **all** browser tools and
+ *   overrides the agent until switched back to Auto.
+ */
+export type NavigateOpenPolicy =
+  | "auto"
+  | "agent"
+  | "user_new_tab"
+  | "user_same_tab";
 
 // ---------------------------------------------------------------------------
 // Userscript metadata

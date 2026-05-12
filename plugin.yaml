@@ -12,8 +12,6 @@ author: "iHeyTang"
 kind: standalone
 provides_tools:
   # Browser control
-  - my_browser_connect
-  - my_browser_disconnect
   - my_browser_status
   - my_browser_navigate
   - my_browser_screenshot
@@ -22,22 +20,17 @@ provides_tools:
   - my_browser_type
   - my_browser_get_html
   - my_browser_get_text
+  - my_browser_active_tab
+  - my_browser_list_tabs
+  - my_browser_read_tab
   - my_browser_session_save
   - my_browser_session_restore
   # Userscript engine (Tampermonkey-compatible)
   - my_browser_userscript_list
-  - my_browser_userscript_get
-  - my_browser_userscript_install
-  - my_browser_userscript_save
-  - my_browser_userscript_remove
-  - my_browser_userscript_set_enabled
+  - my_browser_userscript_manage
   - my_browser_userscript_run
   # Chat side panel discovery
   - my_browser_chat_url
-  # Learn mode (record user demo → trace for RPA)
-  - my_browser_learn_start
-  - my_browser_learn_stop
-  - my_browser_learn_status
 hooks:
   - on_session_start
   - on_session_end

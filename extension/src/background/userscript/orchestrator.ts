@@ -117,10 +117,13 @@ export async function reapplyAllRegistrations(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Manual run-on-agent-tab (used by `userscript.run` bridge method)
+// Manual run on a caller-chosen tab (used by `userscript.run` bridge method).
+// The target tab is resolved by the caller via `resolveTargetTab()` so the
+// same userscript can be forced onto either the agent surface or the user's
+// tab depending on the current run-target.
 // ---------------------------------------------------------------------------
 
-export async function runUserscriptOnAgentTab(
+export async function runUserscriptOnTab(
   id: string,
   tabId: number,
   args: unknown,
