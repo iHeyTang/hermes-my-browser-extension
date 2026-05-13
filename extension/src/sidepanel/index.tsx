@@ -1,6 +1,7 @@
 import {
   ArrowUp,
   Bot,
+  Brain,
   Disc,
   ExternalLink,
   File as FileIcon,
@@ -11,9 +12,12 @@ import {
   Loader2,
   MousePointerClick,
   Paperclip,
+  Pencil,
   Pin,
   Plus,
+  Send,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -23,9 +27,7 @@ import "~style.css";
 
 import { Button } from "~components/ui/button";
 import { HermesLogo } from "~components/hermes-logo";
-import { Label } from "~components/ui/label";
 import { ScrollArea } from "~components/ui/scroll-area";
-import { Switch } from "~components/ui/switch";
 import { Textarea } from "~components/ui/textarea";
 
 import {
@@ -49,9 +51,15 @@ import type {
   AttachmentKind,
 } from "~lib/attachments/types";
 import type { AttachmentReadResult } from "~lib/attachments/read";
-import type {
-  HermesToolProgress,
-  StreamedToolCall,
+import {
+  HERMES_APPROVAL_GATEWAY_TIMEOUT_MS,
+  postHermesApprovalDecision,
+  type ApprovalOutcome,
+  type ApprovalRecord,
+  type HermesApprovalDecision,
+  type HermesApprovalRequest,
+  type HermesToolProgress,
+  type StreamedToolCall,
 } from "~lib/chat/hermes-client";
 import {
   CHAT_PORT_NAME,
@@ -83,7 +91,7 @@ import { TabBar } from "./TabBar";
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = window.setTimeout(() => {
-      reject(new Error(`${label}（超过 ${Math.round(ms / 1000)} 秒）`));
+      reject(new Error(`${label} (exceeded ${Math.round(ms / 1000)}s)`));
     }, ms);
     p.then(
       (v) => {
@@ -179,11 +187,21 @@ interface UiMessage extends ChatMessage {
    * a stable `id` so React keys are stable across rehydration.
    */
   assistantTimeline?: AssistantTimelineItem[];
+  /**
+   * Approvals that fired during this assistant turn — including resolved
+   * ones. The above-composer banner is only for in-flight prompts;
+   * `hermesApprovalRecords` is the persistent audit trail that lives on
+   * the message itself, so users can still see what was approved/denied
+   * long after the popup closed. Survives panel reloads via
+   * `chrome.storage.local` (not in VOLATILE_MESSAGE_FIELDS).
+   */
+  hermesApprovalRecords?: ApprovalRecord[];
 }
 
 type AssistantTimelineItem =
   | { kind: "text"; id: string; text: string }
-  | { kind: "tool"; id: string; toolCallId: string };
+  | { kind: "tool"; id: string; toolCallId: string }
+  | { kind: "approval"; id: string; approvalId: string };
 
 /**
  * In-memory record of a page the user has explicitly pinned to the next
@@ -211,8 +229,8 @@ function previewPendingTurn(t: PendingChatTurn): string {
   const body = t.text.trim();
   if (body) parts.push(body.length > 160 ? `${body.slice(0, 157)}…` : body);
   const n = t.attachments.filter((a) => a.path && !a.uploading).length;
-  if (n > 0) parts.push(n === 1 ? "（1 个附件）" : `（${n} 个附件）`);
-  return parts.join(" ") || "（空）";
+  if (n > 0) parts.push(n === 1 ? "(1 attachment)" : `(${n} attachments)`);
+  return parts.join(" ") || "(empty)";
 }
 
 interface ChatError {
@@ -220,7 +238,44 @@ interface ChatError {
   hint?: string;
 }
 
-export default function SidePanel() {
+/**
+ * Layout variants:
+ *  - "sidebar"     — Plasmo side panel; owns the viewport with `h-screen`,
+ *                    shows its own TabBar at the top.
+ *  - "fullscreen"  — embedded inside the standalone chat tab (chat.html).
+ *                    Fills its parent with `h-full` and hides the TabBar
+ *                    because the chat tab renders sessions in a right rail
+ *                    instead.
+ *
+ * Chat state, composer, message rendering, and approvals are identical
+ * across variants — only chrome (root height + TabBar) differs.
+ */
+/**
+ * Width preset for the messages column in `variant="fullscreen"`. The
+ * composer keeps a fixed cap regardless; only the message flow above it
+ * resizes. Ignored in `variant="sidebar"` (the side panel is already a
+ * narrow column).
+ */
+export type MessagesMaxWidth = "narrow" | "comfortable" | "full";
+
+// Narrow matches the composer's max-w-3xl cap so messages never end up
+// narrower than the input below them (jarring visually). Comfortable
+// widens past the composer; full lets messages span the entire pane.
+const MESSAGES_MAX_WIDTH_CLASS: Record<MessagesMaxWidth, string> = {
+  narrow: "mx-auto w-full max-w-3xl",
+  comfortable: "mx-auto w-full max-w-4xl",
+  full: "",
+};
+
+export interface SidePanelProps {
+  variant?: "sidebar" | "fullscreen";
+  messagesMaxWidth?: MessagesMaxWidth;
+}
+
+export default function SidePanel({
+  variant = "sidebar",
+  messagesMaxWidth = "comfortable",
+}: SidePanelProps = {}) {
   // The side panel sits next to the user's active tab, so we let the user
   // opt into mirroring that page's theme via Settings → Theme = "Match
   // active page". Other preferences (`auto`/`light`/`dark`) behave the same
@@ -230,6 +285,12 @@ export default function SidePanel() {
   const sessions = useSessions();
 
   const [input, setInput] = useState("");
+  // Set when the new-tab Home launcher hands off a prompt via
+  // `chrome.storage.local.home.pendingPrompt`. We populate the composer
+  // with the text and then auto-fire `send()` once the panel is ready —
+  // the user already pressed Enter on Home, so an extra Send click here
+  // would be friction.
+  const [pendingAutosend, setPendingAutosend] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ChatError | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -317,6 +378,41 @@ export default function SidePanel() {
   } | null>(null);
   /** FIFO: user turns composed while `busy`; shown above the composer and drained after each stream. */
   const [pendingQueue, setPendingQueue] = useState<PendingChatTurn[]>([]);
+  /**
+   * `true` after the user explicitly hits Stop with queued items present.
+   * Freezes auto-drain so the next stream doesn't immediately re-trigger
+   * the queue; user can review/edit/delete pending items first. Cleared
+   * by Resume, a fresh Send, or New Chat.
+   */
+  const [queuePaused, setQueuePaused] = useState(false);
+  const queuePausedRef = useRef(false);
+  useEffect(() => {
+    queuePausedRef.current = queuePaused;
+  }, [queuePaused]);
+  /**
+   * When non-null, the composer mirrors a queue item's content for in-place
+   * edit. The item stays in the queue (visually highlighted) and the queue
+   * is paused while editing so nothing fires past it. Send saves the edit
+   * AND fires that item immediately; cancel just clears the composer +
+   * exits edit mode.
+   */
+  const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
+  /**
+   * Active gateway approval requests for the current session. Mirrored
+   * from the SW chat engine's runtime state (snapshot on subscribe + live
+   * `approvalRequest`/`approvalResolved` events). Empty unless the agent
+   * is blocked waiting for the user. Reset on session switch.
+   */
+  const [pendingApprovals, setPendingApprovals] = useState<
+    HermesApprovalRequest[]
+  >([]);
+  /** Latest `X-Hermes-Run-Id` for the active session. Fallback when an approval event lacks its own runId. */
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  /** Per-approval state for the buttons: which decision is in-flight, if any. */
+  const [approvalInFlight, setApprovalInFlight] = useState<
+    Record<string, HermesApprovalDecision>
+  >({});
+  const [approvalError, setApprovalError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   /**
    * Coalesce SSE `delta.content` strings into at most one React update per
@@ -370,6 +466,49 @@ export default function SidePanel() {
     };
   }, []);
 
+  // Pick up a prompt handed off from the new-tab Home launcher. The Home
+  // page stores `{ text }` under `home.pendingPrompt` and opens the side
+  // panel; we drain that key here, prefill the composer, and flag the
+  // turn for auto-send once `sessions.ready` resolves. We clear the
+  // storage key immediately so re-mounts (SW restart, panel reopen) don't
+  // resubmit the same prompt.
+  useEffect(() => {
+    let cancelled = false;
+    const KEY = "home.pendingPrompt";
+    void chrome.storage.local.get(KEY).then((r) => {
+      if (cancelled) return;
+      const raw = r[KEY];
+      void chrome.storage.local.remove(KEY);
+      if (!raw || typeof raw !== "object") return;
+      const text = (raw as { text?: unknown }).text;
+      if (typeof text !== "string" || !text.trim()) return;
+      setInput(text);
+      setPendingAutosend(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // `send` is defined later in this component (it depends on many
+  // closures); keep a ref so the auto-send effect can fire the latest
+  // version without needing `send` in its dependency array.
+  const sendRef = useRef<(() => Promise<void>) | null>(null);
+
+  // Once the panel is fully wired (sessions loaded, not in the middle of
+  // another turn, port presumably connected), drain the pending auto-send
+  // flag and submit the prefilled prompt. We gate on `input` being
+  // non-empty so the React state from the read-on-mount effect above has
+  // landed before send() sees a stale empty string.
+  useEffect(() => {
+    if (!pendingAutosend) return;
+    if (!sessions.ready || busy) return;
+    if (!input.trim()) return;
+    setPendingAutosend(false);
+    const fn = sendRef.current;
+    if (fn) void fn();
+  }, [pendingAutosend, sessions.ready, busy, input]);
+
   function appendTextToVerboseTimeline(delta: string): void {
     const v = verboseStateRef.current;
     if (!v) return;
@@ -389,6 +528,20 @@ export default function SidePanel() {
     );
     if (seen) return;
     v.timeline.push({ kind: "tool", id: shortId("tl"), toolCallId });
+  }
+
+  function appendApprovalToVerboseTimeline(approvalId: string): void {
+    const v = verboseStateRef.current;
+    if (!v) return;
+    const seen = v.timeline.some(
+      (it) => it.kind === "approval" && it.approvalId === approvalId,
+    );
+    if (seen) return;
+    v.timeline.push({
+      kind: "approval",
+      id: shortId("tl"),
+      approvalId,
+    });
   }
 
   function cancelVerboseFlush(): void {
@@ -499,6 +652,10 @@ export default function SidePanel() {
       // otherwise switching to a fresh session keeps the composer
       // disabled from a previous session's streaming state.
       setBusy(false);
+      setPendingApprovals([]);
+      setActiveRunId(null);
+      setApprovalInFlight({});
+      setApprovalError(null);
       // If the persisted log still carries a `streaming: true` flag
       // (panel was reloaded after the SW was killed mid-stream and
       // forgot the runtime), sanitize it here — otherwise the bubble
@@ -524,6 +681,8 @@ export default function SidePanel() {
     // accumulated content onto the matching assistant bubble.
     hydrateLocalFromSnapshot(state);
     setBusy(state.streaming);
+    setPendingApprovals(state.pendingApprovals ?? []);
+    setActiveRunId(state.runId ?? null);
     sessions.setActiveMessages((prev) => {
       const next = (prev as UiMessage[]).map((m) => {
         if (m.uiId !== state.assistantUiId) return m;
@@ -672,6 +831,11 @@ export default function SidePanel() {
       }
       return [];
     });
+    // Errors wipe the queue, so the paused flag (if any) is meaningless now.
+    setQueuePaused(false);
+    setPendingApprovals([]);
+    setApprovalInFlight({});
+    setApprovalError(null);
     setError({ message: event.message, hint: event.hint });
     if (assistantUiId) {
       sessions.setActiveMessages((prev) =>
@@ -755,6 +919,49 @@ export default function SidePanel() {
           );
         }
         break;
+      case "run":
+        setActiveRunId(event.runId || null);
+        break;
+      case "approvalRequest": {
+        const req = event.request;
+        setPendingApprovals((prev) => {
+          const without = prev.filter((a) => a.approvalId !== req.approvalId);
+          return [...without, req];
+        });
+        // Persist a pending record onto the assistant message so the
+        // user can still see "I was asked to approve X" long after the
+        // banner closes. The `raw.timestamp` field is Python time.time()
+        // in seconds (see gateway/platforms/api_server.py:2933) —
+        // multiply to ms.
+        const tsField = (req.raw as Record<string, unknown> | undefined)
+          ?.timestamp;
+        const requestedAt =
+          typeof tsField === "number"
+            ? tsField * 1000
+            : Date.now();
+        appendApprovalRecord(req, requestedAt);
+        // Clear any leftover in-flight marker for a re-emitted request.
+        setApprovalInFlight((prev) => {
+          if (!(req.approvalId in prev)) return prev;
+          const next = { ...prev };
+          delete next[req.approvalId];
+          return next;
+        });
+        break;
+      }
+      case "approvalResolved": {
+        const id = event.approvalId;
+        setPendingApprovals((prev) =>
+          prev.filter((a) => a.approvalId !== id),
+        );
+        setApprovalInFlight((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        break;
+      }
       case "done":
         handleStreamDone(sessionId, event.agentFinalUrl, event.agentFinalTitle);
         break;
@@ -852,7 +1059,7 @@ export default function SidePanel() {
       const tab = await getActiveBrowserTab();
       if (tab?.id === undefined) {
         setPageError(
-          "无法开始录制：没有检测到活动网页标签页。请先打开要演示的页面，再点「记录操作」。",
+          "Cannot start recording: no active web tab detected. Open the page you want to demo, then click “Record actions”.",
         );
         return;
       }
@@ -861,7 +1068,7 @@ export default function SidePanel() {
         tabId: tab.id,
       })) as { ok?: boolean; error?: string };
       if (!r?.ok) {
-        setPageError(r?.error || "无法开始录制");
+        setPageError(r?.error || "Failed to start recording");
         return;
       }
       await refreshLearnStatus();
@@ -881,15 +1088,15 @@ export default function SidePanel() {
           error?: string;
         }>,
         25_000,
-        "结束录制无响应（扩展后台可能未唤醒）",
+        "Stop-recording request timed out (the extension background may be asleep)",
       )) as { ok?: boolean; trace?: unknown; error?: string };
       if (!r?.ok) {
-        setPageError(r?.error || "结束录制失败");
+        setPageError(r?.error || "Failed to stop recording");
         return;
       }
       if (!r.trace) {
         setPageError(
-          "当前没有在录制，或状态已失效。请先点「记录操作」再操作页面，然后点「结束并附加到对话」。",
+          "No active recording, or the session has expired. Click “Record actions” first, demonstrate, then click “Stop and attach”.",
         );
         await refreshLearnStatus();
         return;
@@ -899,8 +1106,9 @@ export default function SidePanel() {
       setPageError(String((e as Error)?.message || e));
       return;
     } finally {
-      // Clear before attachment upload: put 可能因未连接桥接而长时间挂起，
-      // 不应让「结束」按钮一直卡在「处理中」。
+      // Clear before attachment upload: the put can hang for a long time when
+      // the bridge isn't connected, and we don't want the "Stop" button stuck
+      // in a perpetual "processing…" state while we wait on it.
       setLearnStopBusy(false);
     }
 
@@ -912,13 +1120,13 @@ export default function SidePanel() {
       })) as { connected?: boolean };
       if (!st?.connected) {
         setAttachmentError(
-          "未连接 Hermes 桥接，无法上传录制轨迹。请先点击状态栏「Online」，再点一次「结束并附加到对话」。",
+          "Hermes bridge is not connected; can't upload the recorded trace. Click “Online” in the status bar, then try “Stop and attach” again.",
         );
         await refreshLearnStatus();
         return;
       }
     } catch {
-      setAttachmentError("无法检测桥接状态，请确认已连接 Hermes 后再试。");
+      setAttachmentError("Could not read bridge status. Make sure Hermes is connected and try again.");
       await refreshLearnStatus();
       return;
     }
@@ -951,14 +1159,14 @@ export default function SidePanel() {
           options: { sessionId, uiId: pendingUiId },
         }),
         130_000,
-        "上传录制轨迹超时（请保持 Hermes 在线；轨迹过大时也会较慢）",
+        "Recorded-trace upload timed out (keep Hermes online; large traces are slower)",
       )) as AttachmentReadResult;
       if (!isAttachmentReadOk(read)) {
         const hint =
           read.error.includes("No Hermes plugin peer") ||
           read.error.includes("role=agent")
-            ? "扩展已连桥接，但 Hermes 未以插件身份连上（缺 agent 端）。请启动 Hermes 并加载本浏览器插件。"
-            : "请确认 Hermes 已启动、桥接已连接，且网关正常。";
+            ? "Extension is connected to the bridge, but Hermes hasn't joined as the plugin (agent side missing). Start Hermes and load this browser plugin."
+            : "Check that Hermes is running, the bridge is connected, and the gateway is healthy.";
         setAttachmentError(`${read.name}: ${read.error} ${hint}`);
         setAttachments((prev) => prev.filter((a) => a.uiId !== pendingUiId));
         return;
@@ -1134,6 +1342,16 @@ export default function SidePanel() {
           }
           return [];
         });
+        // Queue is scoped to a session; switching tabs drops it, so
+        // any paused flag for the prior session must drop too.
+        setQueuePaused(false);
+        // Pending approvals are also session-scoped — clear them on
+        // switch; the new session's snapshot will repopulate if it has
+        // its own pending approvals.
+        setPendingApprovals([]);
+        setActiveRunId(null);
+        setApprovalInFlight({});
+        setApprovalError(null);
         setPinnedPages([]);
         setPageError(null);
         // Same fire-and-forget GC as `newChat` — the composer-time
@@ -1173,31 +1391,25 @@ export default function SidePanel() {
     // live happens via the agent's `my_browser_active_tab` tool.
     const pages: PageContext[] = [...attachedPagesForTurn];
 
-    const pageSystemMessage: ChatMessage | null =
-      pages.length > 0
-        ? {
-            role: "system",
-            content: formatPageContextsForPrompt(pages),
-          }
-        : null;
+    const pageContextBlock =
+      pages.length > 0 ? formatPageContextsForPrompt(pages) : "";
     const pageBadges =
       pages.length > 0
         ? pages.map((p) => ({ title: p.title, url: p.url }))
         : undefined;
 
-    // Every attachment — image, text, pdf, binary — flows through the same
-    // `<file-attachment path="...">` system block. The agent reads the
-    // file by path with whatever tools it has; we don't inline payloads.
+    // Every attachment — image, text, pdf, binary — is inlined into the
+    // user message content as a plain-text `<file-attachment>` block.
+    // The agent reads the file by path with whatever tools it has; we
+    // don't use OpenAI multimodal parts and we don't emit a separate
+    // system-role message — wire shape stays `{role:"user", content:str}`.
     const attachmentsForSend = attachmentsForTurn.filter(
       (a) => a.path && !a.uploading,
     );
-    const fileSystemMessage: ChatMessage | null =
+    const fileAttachmentBlock =
       attachmentsForSend.length > 0
-        ? {
-            role: "system",
-            content: formatFileAttachmentsForPrompt(attachmentsForSend),
-          }
-        : null;
+        ? formatFileAttachmentsForPrompt(attachmentsForSend)
+        : "";
     // Build the persisted-on-bubble badges in parallel with the request:
     // images need a small thumbnail re-encode which is non-trivial, so we
     // kick that off but don't block the send path on it.
@@ -1255,19 +1467,20 @@ export default function SidePanel() {
       content: m.content,
       ...(m.name ? { name: m.name } : {}),
     }));
-    // All attachment context lives in `fileSystemMessage` (path-only),
-    // mirroring the `pageSystemMessage` shape. There is no per-turn
-    // multimodal payload on the user message any more — the agent picks
-    // up images via its own image tool by path. (See
-    // `INLINE_IMAGES_AS_DATA_URL` in `attachments/format.ts` for the
-    // escape hatch back to inline `image_url` parts.)
+    // Inline page-context and file-attachment blocks into the final user
+    // message content. Context first, user's typed question last — the
+    // model focuses on the most recent tokens, so the actual question
+    // staying at the tail keeps instruction-following clean. The version
+    // saved on `userMsg` (rendered in the bubble) stays as the raw typed
+    // text; only the wire copy carries the inlined blocks.
+    const wireUserContent = [pageContextBlock, fileAttachmentBlock, userMsg.content]
+      .filter((s) => s && s.length > 0)
+      .join("\n\n");
     const history: ChatMessage[] = [
-      ...(fileSystemMessage ? [fileSystemMessage] : []),
-      ...(pageSystemMessage ? [pageSystemMessage] : []),
       ...baseMessages,
       {
         role: userMsg.role,
-        content: userMsg.content,
+        content: wireUserContent,
       },
     ];
 
@@ -1330,19 +1543,23 @@ export default function SidePanel() {
       // Busy clearance is owned by the terminal-event handlers (so a
       // background session's `done` doesn't clobber the active session's
       // busy state). Do NOT touch busy here.
-      setPendingQueue((prev) => {
-        if (prev.length === 0) return prev;
-        const [head, ...tail] = prev;
-        queueMicrotask(() =>
-          void runChatTurn({
-            text: head.text,
-            attachments: head.attachments,
-            attachedPagesForTurn: head.attachedPagesSnapshot,
-            navigateOpenPolicyForTurn: head.navigateOpenPolicySnapshot,
-          }),
-        );
-        return tail;
-      });
+      // If the user hit Stop, the queue was deliberately frozen — don't
+      // re-fire it until they explicitly resume. Otherwise drain the head.
+      if (!queuePausedRef.current) {
+        setPendingQueue((prev) => {
+          if (prev.length === 0) return prev;
+          const [head, ...tail] = prev;
+          queueMicrotask(() =>
+            void runChatTurn({
+              text: head.text,
+              attachments: head.attachments,
+              attachedPagesForTurn: head.attachedPagesSnapshot,
+              navigateOpenPolicyForTurn: head.navigateOpenPolicySnapshot,
+            }),
+          );
+          return tail;
+        });
+      }
     }
   }
 
@@ -1355,6 +1572,14 @@ export default function SidePanel() {
     if (!text && attachments.every((a) => !a.path || a.uploading)) return;
     if (attachmentUploading) return;
     if (!sessions.ready) return;
+
+    // Edit-then-Send: clicking Send while editing a queued item means
+    // "save my changes and fire this one now" — equivalent to the per-row
+    // send-now button on the same item.
+    if (editingQueueId != null) {
+      sendQueueItemNow(editingQueueId);
+      return;
+    }
 
     const attachmentsForSend = attachments.filter((a) => a.path && !a.uploading);
 
@@ -1375,6 +1600,10 @@ export default function SidePanel() {
       // to a follow-up turn the user types while this one is still in flight.
       setPinnedPages([]);
       setAttachmentError(null);
+      // Sending a new message implicitly un-pauses: the user is clearly
+      // ready for the queue to move again. The current stream will finish
+      // and the finally-drain will kick in normally.
+      if (queuePausedRef.current) setQueuePaused(false);
       return;
     }
 
@@ -1384,6 +1613,11 @@ export default function SidePanel() {
     setPinnedPages([]);
     setAttachmentError(null);
 
+    // Not busy. If the queue was paused (i.e., user hit Stop and left items
+    // queued), unpause first so the runChatTurn's finally-drain fires the
+    // remaining items after this fresh turn completes.
+    if (queuePausedRef.current) setQueuePaused(false);
+
     await runChatTurn({
       text,
       attachments: attachmentsForSend,
@@ -1392,13 +1626,18 @@ export default function SidePanel() {
     });
   }
 
+  // Keep the ref pointed at the latest `send` closure so the
+  // pending-autosend effect can fire it without putting a fresh function
+  // identity into its deps array on every render.
+  sendRef.current = send;
+
   function stop() {
-    setPendingQueue((prev) => {
-      for (const q of prev) {
-        for (const a of q.attachments) void deleteAttachmentFile(a);
-      }
-      return [];
-    });
+    // Preserve the pending queue. Hitting Stop while items are queued is
+    // a "halt and let me think" gesture — wiping the queue forces the user
+    // to retype everything they had lined up. We freeze auto-drain with
+    // `queuePaused` so the next finished stream doesn't immediately fire
+    // the next queued item behind the user's back.
+    setQueuePaused(true);
     const sid = sessions.activeId;
     const port = portRef.current;
     if (sid && port) {
@@ -1418,16 +1657,339 @@ export default function SidePanel() {
       }
       return prev.filter((q) => q.queueId !== queueId);
     });
+    // If we just deleted the row that was being edited, drop edit mode so
+    // the composer doesn't keep a ghost reference to a vanished item.
+    if (editingQueueId === queueId) {
+      setEditingQueueId(null);
+      setInput("");
+      for (const a of attachments) void deleteAttachmentFile(a);
+      setAttachments([]);
+      setPinnedPages([]);
+    }
   }
 
-  // Show / hide the agent window — same SW action the popup already
-  // exposes via its "Show Agent Window" button. Wired to the run-status
-  // bar so users can peek at the agent without leaving the chat.
-  async function showAgentWindow() {
-    try {
-      await chrome.runtime.sendMessage({ action: "show" });
-    } catch (e) {
-      console.warn("[sidepanel] show agent window failed:", e);
+  /**
+   * Enter edit mode for a queued item. The item STAYS in the queue (the
+   * user explicitly asked for this — clicking edit shouldn't lose the slot
+   * in the queue). The composer mirrors its content for editing, the queue
+   * is paused so nothing fires past it, and the editing row gets a visual
+   * marker. If the composer already had a draft, that draft is appended
+   * to the queue end so nothing is lost.
+   */
+  function editPendingQueueItem(queueId: string) {
+    const item = pendingQueue.find((q) => q.queueId === queueId);
+    if (!item) return;
+    const draftText = input;
+    const draftAttachments = attachments.filter((a) => a.path && !a.uploading);
+    const draftPinnedPages = pinnedPages;
+    const draftPolicy = navigateOpenPolicy;
+    const hasDraft =
+      draftText.trim().length > 0 || draftAttachments.length > 0;
+
+    setPendingQueue((prev) => {
+      if (!hasDraft) return prev;
+      return [
+        ...prev,
+        {
+          queueId: shortId("q"),
+          text: draftText,
+          attachments: draftAttachments.map((a) => ({ ...a })),
+          attachedPagesSnapshot: draftPinnedPages.map((p) => ({ ...p })),
+          navigateOpenPolicySnapshot: draftPolicy,
+        },
+      ];
+    });
+    setEditingQueueId(queueId);
+    setInput(item.text);
+    setAttachments(item.attachments.map((a) => ({ ...a })));
+    setPinnedPages(item.attachedPagesSnapshot.map((p) => ({ ...p })));
+    setNavigateOpenPolicy(item.navigateOpenPolicySnapshot);
+    setQueuePaused(true);
+  }
+
+  /** Exit edit mode without saving the composer content back to the queue. */
+  function cancelQueueEdit() {
+    if (editingQueueId == null) return;
+    setEditingQueueId(null);
+    setInput("");
+    for (const a of attachments) void deleteAttachmentFile(a);
+    setAttachments([]);
+    setPinnedPages([]);
+  }
+
+  /**
+   * Kick the head of the queue back into runChatTurn. Used by send-now and
+   * by `send()` when the user dispatches a new message while the queue is
+   * paused.
+   */
+  function drainPendingQueueHead() {
+    setPendingQueue((prev) => {
+      if (prev.length === 0) return prev;
+      const [head, ...tail] = prev;
+      queueMicrotask(() =>
+        void runChatTurn({
+          text: head.text,
+          attachments: head.attachments,
+          attachedPagesForTurn: head.attachedPagesSnapshot,
+          navigateOpenPolicyForTurn: head.navigateOpenPolicySnapshot,
+        }),
+      );
+      return tail;
+    });
+  }
+
+  /**
+   * "Send now": move this item to the front of the queue, unpause, and
+   * (when not already streaming) fire it immediately. While busy, the
+   * reorder is enough — the runChatTurn finally-drain picks up the new
+   * head when the current stream ends. If the user was editing this exact
+   * item, commit the composer content into the item first so the fired
+   * version includes their edits.
+   */
+  function sendQueueItemNow(queueId: string) {
+    const editingThisOne = editingQueueId === queueId;
+    if (editingThisOne) {
+      // Build the updated payload from current composer state — this is the
+      // committed-edit version that fires.
+      const updated: PendingChatTurn = {
+        queueId,
+        text: input,
+        attachments: attachments
+          .filter((a) => a.path && !a.uploading)
+          .map((a) => ({ ...a })),
+        attachedPagesSnapshot: pinnedPages.map((p) => ({ ...p })),
+        navigateOpenPolicySnapshot: navigateOpenPolicy,
+      };
+      setPendingQueue((prev) => {
+        const without = prev.filter((q) => q.queueId !== queueId);
+        return [updated, ...without];
+      });
+      setEditingQueueId(null);
+      setInput("");
+      setAttachments([]);
+      setPinnedPages([]);
+    } else {
+      setPendingQueue((prev) => {
+        const item = prev.find((q) => q.queueId === queueId);
+        if (!item) return prev;
+        const without = prev.filter((q) => q.queueId !== queueId);
+        return [item, ...without];
+      });
+    }
+    setQueuePaused(false);
+    if (busy) {
+      // Interrupt the in-flight stream so the promoted item fires
+      // immediately. The cascade is:
+      //   1. POST `abort` to the SW engine → ctrl.abort() → SSE fetch
+      //      throws AbortError → engine catch → emit "aborted"
+      //   2. Panel `handleStreamAborted` → rejects pendingTurnRef →
+      //      runChatTurn's await rethrows → catch (logs) → finally
+      //   3. finally sees `queuePaused === false` (we just cleared it
+      //      above) → drains queue head (= this just-promoted item) →
+      //      fires it via a fresh runChatTurn
+      // The current stream's partial response is marked [stopped] —
+      // that's the explicit cost the user is paying for "send now".
+      const sid = sessions.activeId;
+      const port = portRef.current;
+      if (sid && port) {
+        try {
+          port.postMessage({ type: "abort", sessionId: sid });
+        } catch (e) {
+          console.warn("[sidepanel] abort-for-send-now failed:", e);
+        }
+      }
+    } else {
+      queueMicrotask(() => drainPendingQueueHead());
+    }
+  }
+
+  /**
+   * Append (or refresh) the persistent approval record on whichever
+   * assistant message is currently streaming. Idempotent: re-emits of
+   * the same approval (e.g. gateway retry, panel reopen during a still-
+   * pending approval) overwrite the existing record rather than
+   * stacking duplicates. Skipped silently when there's no active
+   * assistant message — the gateway shouldn't fire an approval outside
+   * a turn, but we don't want to crash if it does.
+   */
+  function appendApprovalRecord(
+    req: HermesApprovalRequest,
+    requestedAt: number,
+  ): void {
+    const uiId =
+      verboseStateRef.current?.assistantUiId ??
+      streamChunkBufRef.current?.assistantUiId;
+    if (!uiId) return;
+    const record: ApprovalRecord = {
+      approvalId: req.approvalId,
+      command: req.command,
+      tool: req.tool,
+      description: req.description,
+      reason: req.reason,
+      requestedAt,
+    };
+    // Drop a timeline marker too so the approval chip renders inline
+    // (between whatever text/tool items preceded it). Idempotent —
+    // re-firing the same approval doesn't double up.
+    appendApprovalToVerboseTimeline(req.approvalId);
+    scheduleVerboseFlush();
+    sessions.setActiveMessages((prev) =>
+      (prev as UiMessage[]).map((m) => {
+        if (m.uiId !== uiId) return m;
+        const existing = m.hermesApprovalRecords ?? [];
+        const without = existing.filter(
+          (r) => r.approvalId !== req.approvalId,
+        );
+        return {
+          ...m,
+          hermesApprovalRecords: [...without, record],
+        };
+      }),
+    );
+  }
+
+  /**
+   * Stamp the final outcome on a persisted record. Searches every
+   * message in the active session — the approval may have been
+   * recorded against a message that's no longer the head, especially
+   * when expired approvals are settled long after the turn moved on.
+   * No-op when the record is already settled (don't trample a real
+   * outcome with a follow-up `expired`/`failed`).
+   */
+  function markApprovalOutcome(
+    approvalId: string,
+    outcome: ApprovalOutcome,
+    decidedAt: number,
+  ): void {
+    if (!approvalId) return;
+    sessions.setActiveMessages((prev) =>
+      (prev as UiMessage[]).map((m) => {
+        const records = m.hermesApprovalRecords;
+        if (!records || records.length === 0) return m;
+        const i = records.findIndex((r) => r.approvalId === approvalId);
+        if (i < 0) return m;
+        if (records[i].outcome) return m;
+        const next = records.slice();
+        next[i] = { ...next[i], outcome, decidedAt };
+        return { ...m, hermesApprovalRecords: next };
+      }),
+    );
+  }
+
+  /**
+   * POST a user decision for one pending approval and clear the local card
+   * optimistically. The SW chat engine also drops the approval from its
+   * runtime state via the `clearApproval` port message so any other panel
+   * subscribed to the same session loses the card too (matches the
+   * "multi-panel see same stream" guarantee from the engine refactor).
+   */
+  async function respondToApproval(
+    request: HermesApprovalRequest,
+    decision: HermesApprovalDecision,
+  ): Promise<void> {
+    setApprovalError(null);
+    const runId = request.runId || activeRunId || "";
+    if (!runId) {
+      setApprovalError(
+        "Missing run id for this approval. The gateway didn't return X-Hermes-Run-Id and the event payload didn't include one.",
+      );
+      return;
+    }
+    setApprovalInFlight((prev) => ({
+      ...prev,
+      [request.approvalId]: decision,
+    }));
+    const res = await postHermesApprovalDecision({
+      apiBase: config.apiBase,
+      apiKey: config.apiKey || undefined,
+      runId,
+      approvalId: request.approvalId,
+      decision,
+    });
+    if (!res.ok) {
+      // 409 `approval_not_active` means the gateway has already timed out
+      // and cleaned up this approval session (default
+      // approvals.gateway_timeout = 300s). The agent has been unblocked
+      // with a BLOCKED response, the run has typically finished, and
+      // there's nothing left to approve. Treat it as "card is stale" —
+      // drop it locally + show a friendly notice instead of leaving the
+      // user clicking a button that will never succeed.
+      const errStr = res.error || "";
+      const isStale =
+        res.status === 409 ||
+        errStr.includes("approval_not_active") ||
+        errStr.includes("no active approval session") ||
+        errStr.includes("no pending approval");
+      if (isStale) {
+        setPendingApprovals((prev) =>
+          prev.filter((a) => a.approvalId !== request.approvalId),
+        );
+        setApprovalInFlight((prev) => {
+          const next = { ...prev };
+          delete next[request.approvalId];
+          return next;
+        });
+        // Sync the SW so its runtime state also drops the stale pending,
+        // matching the optimistic-clear behaviour on a successful POST.
+        const sid = sessions.activeId;
+        const port = portRef.current;
+        if (sid && port) {
+          try {
+            port.postMessage({
+              type: "clearApproval",
+              sessionId: sid,
+              approvalId: request.approvalId,
+            });
+          } catch {
+            // Best-effort.
+          }
+        }
+        // Stamp the persisted record so the history chip flips to
+        // "Expired" instead of staying in a perpetual pending state.
+        markApprovalOutcome(request.approvalId, "expired", Date.now());
+        setApprovalError(
+          "Approval timed out (default 5 minutes); the command was auto-denied. To extend the window, add `gateway_timeout: 600` under the `approvals` section of ~/.hermes/config.yaml.",
+        );
+        return;
+      }
+      // POST failed for a non-stale reason (network down, gateway error,
+      // bad auth). Mark the record as `failed` so it doesn't stay
+      // "Waiting…" forever in the history view.
+      markApprovalOutcome(request.approvalId, "failed", Date.now());
+      setApprovalError(
+        `Approval failed: ${res.error || "unknown"} (HTTP ${res.status ?? "?"})`,
+      );
+      setApprovalInFlight((prev) => {
+        const next = { ...prev };
+        delete next[request.approvalId];
+        return next;
+      });
+      return;
+    }
+    // Optimistic clear: drop the card locally and tell the SW to do the
+    // same in its runtime state. The gateway's eventual `approval.responded`
+    // SSE event becomes a no-op (already cleared).
+    setPendingApprovals((prev) =>
+      prev.filter((a) => a.approvalId !== request.approvalId),
+    );
+    setApprovalInFlight((prev) => {
+      const next = { ...prev };
+      delete next[request.approvalId];
+      return next;
+    });
+    markApprovalOutcome(request.approvalId, decision, Date.now());
+    const sid = sessions.activeId;
+    const port = portRef.current;
+    if (sid && port) {
+      try {
+        port.postMessage({
+          type: "clearApproval",
+          sessionId: sid,
+          approvalId: request.approvalId,
+        });
+      } catch (e) {
+        console.warn("[sidepanel] clearApproval post failed:", e);
+      }
     }
   }
 
@@ -1447,29 +2009,6 @@ export default function SidePanel() {
     await applyOpenPolicyToRunTarget(next);
   }
 
-  // Mid-run hand-off: pin Open to Same tab, then ferry the agent's
-  // current URL into the user's tab so the user picks up exactly
-  // where the agent left off. We don't abort the run — the agent
-  // keeps streaming whatever it was about to say; only the *next*
-  // tool call (if any) routes to the user tab.
-  async function moveToMyTab() {
-    try {
-      await handleNavigateOpenPolicyChange("user_same_tab");
-      const win = await chrome.windows.getCurrent();
-      const [activeUserTab] = await chrome.tabs.query({
-        active: true,
-        windowId: win.id,
-      });
-      await chrome.runtime.sendMessage({
-        action: "runTarget.promoteToUser",
-        userTabId: activeUserTab?.id ?? null,
-        userWindowId: win.id ?? null,
-      });
-    } catch (e) {
-      console.warn("[sidepanel] promoteToUser failed:", e);
-    }
-  }
-
   async function newChat() {
     setError(null);
     setPinnedPages([]);
@@ -1480,6 +2019,11 @@ export default function SidePanel() {
       }
       return [];
     });
+    setQueuePaused(false);
+    setPendingApprovals([]);
+    setActiveRunId(null);
+    setApprovalInFlight({});
+    setApprovalError(null);
     // Drop any composer-time attachments and unlink their on-disk files —
     // they were tied to the old session and won't be referenced again.
     for (const a of attachments) void deleteAttachmentFile(a);
@@ -1618,7 +2162,7 @@ export default function SidePanel() {
       }
     } catch (e) {
       const msg = String((e as Error)?.message || e);
-      setAttachmentError(`附件处理异常：${msg}`);
+      setAttachmentError(`Attachment processing error: ${msg}`);
       setAttachments((prev) => prev.filter((a) => !pendingUiIds.includes(a.uiId)));
     } finally {
       setAttachmentBusy(false);
@@ -1708,17 +2252,27 @@ export default function SidePanel() {
     !config.apiKey && hasActive && messages.length === 0 && !error;
 
   return (
-    <div className="relative flex h-screen flex-col bg-background text-foreground">
-      <TabBar
-        tabs={sessions.openTabs}
-        activeId={sessions.activeId}
-        onActivate={(id) => void sessions.switchToTab(id)}
-        onClose={(id) => void sessions.closeTab(id)}
-        onCloseMany={(ids) => void sessions.closeTabs(ids)}
-        onNew={() => void newChat()}
-        onOpenHistory={() => setHistoryOpen(true)}
-        onOpenSettings={() => chrome.runtime.openOptionsPage()}
-      />
+    <div
+      className={cn(
+        "relative flex flex-col bg-background text-foreground",
+        // sidebar variant takes the full viewport; fullscreen variant
+        // fills its parent so the chat tab can frame it alongside a
+        // sessions rail.
+        variant === "fullscreen" ? "h-full" : "h-screen",
+      )}
+    >
+      {variant === "sidebar" && (
+        <TabBar
+          tabs={sessions.openTabs}
+          activeId={sessions.activeId}
+          onActivate={(id) => void sessions.switchToTab(id)}
+          onClose={(id) => void sessions.closeTab(id)}
+          onCloseMany={(ids) => void sessions.closeTabs(ids)}
+          onNew={() => void newChat()}
+          onOpenHistory={() => setHistoryOpen(true)}
+          onOpenSettings={() => chrome.runtime.openOptionsPage()}
+        />
+      )}
 
       {/*
         `pt-2` reserves a fixed 8px strip of `bg-background` between the
@@ -1728,7 +2282,14 @@ export default function SidePanel() {
         the tabs instead of butting up against them.
       */}
       <div
-        className="relative min-w-0 flex-1 overflow-hidden pt-2"
+        className={cn(
+          "relative min-w-0 flex-1 overflow-hidden pt-2",
+          // Only fullscreen variant honors the messages-width preset; the
+          // sidebar variant is already a narrow column and shouldn't be
+          // capped further. `full` evaluates to "" so messages span the
+          // entire pane.
+          variant === "fullscreen" && MESSAGES_MAX_WIDTH_CLASS[messagesMaxWidth],
+        )}
         ref={scrollRef}
       >
         {hasActive && messages.length === 0 ? (
@@ -1804,7 +2365,15 @@ export default function SidePanel() {
         )}
       </div>
 
-      <footer className="p-2">
+      <footer
+        className={cn(
+          "p-2",
+          // Composer always gets a fixed cap in fullscreen — a wide
+          // input line is uncomfortable to type into regardless of how
+          // wide the user set the message column above.
+          variant === "fullscreen" && "mx-auto w-full max-w-3xl",
+        )}
+      >
         {/*
           BridgeStatusBar is the steady-state replacement for the legacy
           toolbar popup AND the catch-all surface for transient
@@ -1845,16 +2414,16 @@ export default function SidePanel() {
                   size="sm"
                   className="h-6 gap-1 px-2 text-[11px]"
                   disabled={attachmentUploading}
-                  title="在活动标签页记录点击与输入；结束后将轨迹 JSON 附加到对话，提示词由你自行编写"
+                  title="Record clicks and input on the active tab; the trace JSON will be attached to the conversation when you stop. Write your prompt yourself."
                   onClick={() => void startLearnFromPanel()}
                 >
                   <Disc className="h-3 w-3 shrink-0" />
-                  记录操作
+                  Record actions
                 </Button>
               ) : (
                 <>
                   <span className="max-w-[10rem] truncate text-[11px] text-muted-foreground">
-                    录制中 · {learnEventCount} 步
+                    Recording · {learnEventCount} steps
                   </span>
                   <Button
                     type="button"
@@ -1863,7 +2432,7 @@ export default function SidePanel() {
                     disabled={learnStopBusy || attachmentUploading}
                     onClick={() => void stopLearnToComposer()}
                   >
-                    {learnStopBusy ? "处理中…" : "结束并附加"}
+                    {learnStopBusy ? "Processing…" : "Stop and attach"}
                   </Button>
                 </>
               )}
@@ -1919,6 +2488,15 @@ export default function SidePanel() {
             if (files.length > 0) void addFiles(files);
           }}
         >
+          {pendingApprovals.length > 0 && (
+            <ApprovalBanner
+              approvals={pendingApprovals}
+              inFlight={approvalInFlight}
+              error={approvalError}
+              onRespond={respondToApproval}
+              onDismissError={() => setApprovalError(null)}
+            />
+          )}
           {pendingQueue.length > 0 && (
             <div
               className={cn(
@@ -1927,34 +2505,94 @@ export default function SidePanel() {
               )}
             >
               <ul className="max-h-[7rem] divide-y divide-border/60 overflow-y-auto">
-                {pendingQueue.map((item) => (
-                  <li
-                    key={item.queueId}
-                    className="flex items-start gap-1.5 py-1.5 pl-2.5 pr-1"
-                  >
-                    <p className="min-w-0 flex-1 truncate text-[12px] leading-snug text-foreground/90">
-                      {previewPendingTurn(item)}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => removePendingQueueItem(item.queueId)}
-                      className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                      title="从队列移除"
-                      aria-label="从队列移除"
+                {pendingQueue.map((item) => {
+                  const isEditing = item.queueId === editingQueueId;
+                  return (
+                    <li
+                      key={item.queueId}
+                      className="group flex items-center gap-1.5 py-1.5 pl-2.5 pr-1 transition-colors hover:bg-muted/70"
                     >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </li>
-                ))}
+                      <p
+                        className={cn(
+                          "min-w-0 flex-1 truncate text-[12px] leading-snug",
+                          isEditing
+                            ? "text-muted-foreground"
+                            : "text-foreground/90",
+                        )}
+                        title={
+                          isEditing
+                            ? "This message is being edited in the composer"
+                            : previewPendingTurn(item)
+                        }
+                      >
+                        {previewPendingTurn(item)}
+                      </p>
+                      <div className="flex shrink-0 items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => sendQueueItemNow(item.queueId)}
+                          title="Send now: jump this message to the front of the queue"
+                          aria-label="Send now"
+                          className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                        >
+                          <Send className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => editPendingQueueItem(item.queueId)}
+                          title="Edit: load this message into the composer (keeps queue position, pauses the queue)"
+                          aria-label="Edit"
+                          disabled={isEditing}
+                          className={cn(
+                            "rounded p-1 transition-colors",
+                            isEditing
+                              ? "cursor-default text-foreground/40"
+                              : "text-muted-foreground hover:bg-foreground/10 hover:text-foreground",
+                          )}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removePendingQueueItem(item.queueId)}
+                          title="Delete"
+                          aria-label="Delete"
+                          className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}
         <div
           className={cn(
             "relative flex flex-col rounded-lg border border-input bg-background shadow-sm transition-colors focus-within:border-ring/60",
-            pendingQueue.length > 0 && "rounded-t-none",
+            (pendingQueue.length > 0 || pendingApprovals.length > 0) &&
+              "rounded-t-none",
           )}
         >
+          {editingQueueId != null && (
+            // Minimal inline hint — just enough to remember the composer
+            // is bound to a queue item. Tooltip carries the longer
+            // explanation; cancel button is the small ✕.
+            <div className="flex items-center gap-1 px-2 pt-1 text-[10px] text-muted-foreground/70">
+              <Pencil className="h-2.5 w-2.5" />
+              <span>Editing</span>
+              <button
+                type="button"
+                onClick={cancelQueueEdit}
+                title="Cancel edit (discards composer changes; the queued item is unchanged)"
+                className="rounded p-0.5 transition-colors hover:bg-muted hover:text-foreground"
+                aria-label="Cancel edit"
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </div>
+          )}
           {(() => {
             // The live current chip is suppressed when:
             // The pending-page list is now strictly opt-in (click Pin to add
@@ -1991,7 +2629,7 @@ export default function SidePanel() {
             onChange={(e) => setInput(e.target.value)}
             placeholder={
               attachmentUploading
-                ? "等待附件上传完成…"
+                ? "Waiting for attachment upload to finish…"
                 : attachments.length > 0
                   ? "Add a question about your file(s)…"
                   : pinnedPages.length > 0
@@ -2020,43 +2658,12 @@ export default function SidePanel() {
           />
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted-foreground">
-              {busy &&
-                (navigateOpenPolicy === "auto" ||
-                  navigateOpenPolicy === "agent") && (
-                  // Mid-run handoff affordances for the agent window. The
-                  // "running" signal itself lives on individual tool chips
-                  // (amber + breathing dot) and the bubble caret, so a
-                  // separate global spinner + "Open: …" status would just
-                  // duplicate state the user can already see in the bubble.
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => void showAgentWindow()}
-                      className="h-5 px-1.5 text-[10px]"
-                      title="Bring the agent's background window forward"
-                    >
-                      Show window
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => void moveToMyTab()}
-                      className="h-5 px-1.5 text-[10px]"
-                      title="Switch to Same tab + bring the agent's current URL with you"
-                    >
-                      Move to my tab
-                    </Button>
-                  </div>
-                )}
               <div className="flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => void openFilePicker()}
                 disabled={attachmentBusy || attachmentUploading}
-                title="附加文件（可多选）· Attach files"
+                title="Attach files (multi-select supported)"
                 aria-label="Attach files"
                 className={cn(
                   "inline-flex h-6 w-6 items-center justify-center rounded-full border border-border bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
@@ -2092,7 +2699,10 @@ export default function SidePanel() {
                 className={cn(
                   "inline-flex h-6 cursor-pointer select-none items-center gap-1 rounded-full border px-2 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                   isCurrentPagePinned
-                    ? "border-primary bg-primary text-primary-foreground hover:bg-primary/90"
+                    // Lightweight "active" state: a translucent foreground
+                    // wash instead of the loud primary fill. Reads clearly
+                    // as selected without dominating the toolbar.
+                    ? "border-foreground/20 bg-foreground/10 text-foreground hover:bg-foreground/15"
                     : "border-border bg-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                   pinDisabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
                 )}
@@ -2107,23 +2717,25 @@ export default function SidePanel() {
                 policy={navigateOpenPolicy}
                 onChange={(next) => void handleNavigateOpenPolicyChange(next)}
               />
-              <div
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/80 bg-muted/30 px-2 py-0.5"
-                title="在助手气泡中展示流式工具调用与推理片段（需模型返回相应字段）"
+              <button
+                type="button"
+                onClick={() => setShowStreamDetails((v) => !v)}
+                aria-pressed={showStreamDetails}
+                title="Show the agent's reasoning and tool-call trace in assistant bubbles (when the model doesn't emit reasoning, only tool calls are shown)"
+                className={cn(
+                  // Mirror Pin's pattern (and its lightweight active
+                  // styling): outlined when off, translucent foreground
+                  // wash when on. The earlier loud primary fill was too
+                  // shouty for a composer-level toggle.
+                  "inline-flex h-6 cursor-pointer select-none items-center gap-1 rounded-full border px-2 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                  showStreamDetails
+                    ? "border-foreground/20 bg-foreground/10 text-foreground hover:bg-foreground/15"
+                    : "border-border bg-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                )}
               >
-                <Switch
-                  id="hermes-show-stream-details"
-                  checked={showStreamDetails}
-                  onCheckedChange={setShowStreamDetails}
-                  className="h-4 w-7 [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-3"
-                />
-                <Label
-                  htmlFor="hermes-show-stream-details"
-                  className="cursor-pointer whitespace-nowrap text-[10px] font-medium text-muted-foreground"
-                >
-                  展示
-                </Label>
-              </div>
+                <Brain className="h-3 w-3" />
+                <span>Thoughts</span>
+              </button>
               </div>
             </div>
             {busy ? (
@@ -2132,7 +2744,7 @@ export default function SidePanel() {
                   size="icon"
                   onClick={() => void send()}
                   disabled={attachmentUploading || attachmentBusy}
-                  title="加入队列，本轮结束后发送"
+                  title="Queue: send after the current turn finishes"
                   className="h-6 w-6 shrink-0 rounded-full [&_svg]:size-3"
                 >
                   <ArrowUp strokeWidth={3} />
@@ -2142,8 +2754,8 @@ export default function SidePanel() {
                   type="button"
                   size="icon"
                   onClick={stop}
-                  title="停止生成"
-                  aria-label="停止生成"
+                  title="Stop generation"
+                  aria-label="Stop generation"
                   className="h-6 w-6 shrink-0 rounded-full"
                 >
                   <span
@@ -2389,7 +3001,7 @@ interface AttachmentChipProps {
 function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
   const sizeLabel = formatBytesShort(attachment.size);
   const titleLines: string[] = [];
-  if (attachment.uploading) titleLines.push("上传中…");
+  if (attachment.uploading) titleLines.push("Uploading…");
   titleLines.push(attachment.name);
   titleLines.push(`${attachment.kind} • ${sizeLabel}`);
   if (attachment.mime) titleLines.push(attachment.mime);
@@ -2411,7 +3023,7 @@ function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
         <span className="ml-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted/60">
           <Loader2
             className="h-3.5 w-3.5 animate-spin text-foreground"
-            aria-label="上传中"
+            aria-label="Uploading"
           />
         </span>
       ) : attachment.kind === "image" && attachment.thumbDataUrl ? (
@@ -2426,7 +3038,7 @@ function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
         </span>
       )}
       <span className="truncate">
-        {attachment.uploading ? "上传中 · " : ""}
+        {attachment.uploading ? "Uploading · " : ""}
         {attachment.name}
       </span>
       {attachment.fromPageContext && (
@@ -2610,23 +3222,79 @@ function MessageTurns({
 }
 
 /**
- * One tool-progress chip. Click toggles its own details panel. Running
- * chips get an amber treatment + a breathing dot in place of the emoji
- * so the live state is visible without a separate label.
+ * Pretty-print a tool-call duration. Sub-second renders as `423ms` so the
+ * order of magnitude is obvious; second-scale gets one decimal so eyes
+ * don't fatigue on a flickering ones digit; minute-scale switches to
+ * `m s` so long-running scrapes read cleanly.
+ */
+function formatToolDuration(ms: number): string {
+  if (ms < 0) return "0ms";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSec = Math.round(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec - m * 60;
+  return `${m}m ${s}s`;
+}
+
+/**
+ * One tool-progress chip. Layout: [status slot][tool name][· label preview]
+ * [duration].
+ *
+ * The status slot is a fixed width so the chip text aligns regardless of
+ * whether the leading glyph is an animated dot (running), an emoji
+ * (completed with emoji), or a solid placeholder dot (completed without
+ * emoji). Click toggles a details panel for the full `label` text.
  */
 function ToolChip({ event }: { event: HermesToolProgress }) {
   const [expanded, setExpanded] = useState(false);
-  const hasDetail =
-    !!event.label &&
-    event.label.trim() !== "" &&
-    event.label.trim() !== event.tool;
+  // We force a re-render every second while a chip is running so the
+  // running-duration ticks up live. Once `completed` arrives the chip
+  // re-renders with `durationMs` and this effect tears down.
+  const [tick, setTick] = useState(0);
   const running = event.status === "running";
+  useEffect(() => {
+    if (!running) return;
+    const id = window.setInterval(() => setTick((t) => t + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [running]);
+  // Touch `tick` so eslint/TS doesn't drop the rerender hook; we only
+  // need the side effect of state updates.
+  void tick;
+
+  const labelRaw = (event.label ?? "").trim();
+  const labelMeaningful = labelRaw && labelRaw !== event.tool;
+  const hasDetail = !!labelMeaningful;
+
+  // Duration text:
+  // - completed → durationMs stamped by the engine
+  // - running → live elapsed since startedAt (only displayed once we've
+  //   been running for ≥1s so very fast tools don't flash a "0s" suffix)
+  let durationText: string | null = null;
+  if (!running && typeof event.durationMs === "number") {
+    durationText = formatToolDuration(event.durationMs);
+  } else if (running && typeof event.startedAt === "number") {
+    const elapsed = Date.now() - event.startedAt;
+    if (elapsed >= 1000) durationText = formatToolDuration(elapsed);
+  }
+
+  const tooltipParts: string[] = [event.tool];
+  if (labelMeaningful) tooltipParts.push(labelRaw);
+  if (running) {
+    tooltipParts.push("running…");
+  } else if (typeof event.durationMs === "number") {
+    tooltipParts.push(`completed in ${formatToolDuration(event.durationMs)}`);
+  }
+  if (hasDetail) tooltipParts.push("(click to expand)");
+  const tooltip = tooltipParts.join(" · ");
+
   return (
-    <div className="flex flex-col items-start gap-1">
+    <div className="flex max-w-full flex-col items-start gap-1">
       <button
         type="button"
         disabled={!hasDetail}
         onClick={() => hasDetail && setExpanded((v) => !v)}
+        title={tooltip}
         className={cn(
           "inline-flex max-w-full items-center gap-1.5 rounded-md border px-1.5 py-0.5 font-mono text-[10.5px] leading-none transition-colors",
           running
@@ -2637,23 +3305,45 @@ function ToolChip({ event }: { event: HermesToolProgress }) {
                 : "cursor-pointer border-border/60 bg-muted/30 text-foreground/75 hover:bg-muted/60"
               : "cursor-default border-border/40 bg-muted/20 text-foreground/55",
         )}
-        title={
-          running
-            ? `${event.tool} — running…`
-            : hasDetail
-              ? "Click to view details"
-              : event.tool
-        }
       >
-        {running && (
-          <span aria-hidden className="hermes-thinking-dot shrink-0" />
+        {/* Fixed-width status slot: keeps the tool-name column aligned
+            across running / completed-with-emoji / completed-plain chips. */}
+        <span
+          aria-hidden
+          className="inline-flex h-3 w-3 shrink-0 items-center justify-center leading-none"
+        >
+          {running ? (
+            <span className="hermes-thinking-dot" />
+          ) : event.emoji ? (
+            <span className="leading-none">{event.emoji}</span>
+          ) : (
+            // Completed without an emoji: a solid muted dot mirrors the
+            // breathing dot's footprint so the chip stays aligned with
+            // its siblings instead of jumping left.
+            <span className="h-1.5 w-1.5 rounded-full bg-current opacity-50" />
+          )}
+        </span>
+        <span className="shrink-0">{event.tool}</span>
+        {labelMeaningful && (
+          <>
+            <span aria-hidden className="shrink-0 opacity-40">
+              ·
+            </span>
+            <span className="min-w-0 truncate font-mono text-foreground/60">
+              {labelRaw}
+            </span>
+          </>
         )}
-        {!running && event.emoji && (
-          <span aria-hidden className="leading-none">
-            {event.emoji}
+        {durationText && (
+          <span
+            className={cn(
+              "ml-auto shrink-0 pl-1 tabular-nums opacity-70",
+              running ? "" : "text-foreground/55",
+            )}
+          >
+            {durationText}
           </span>
         )}
-        <span>{event.tool}</span>
       </button>
       {expanded && hasDetail && (
         <div className="w-full rounded-md border border-border/50 bg-muted/25 px-2 py-1.5">
@@ -2673,6 +3363,340 @@ function ToolProgressChips({ events }: { events: HermesToolProgress[] }) {
       {events.map((ev) => (
         <ToolChip key={ev.toolCallId} event={ev} />
       ))}
+    </div>
+  );
+}
+
+/**
+ * Gateway approval prompts. Sits above the queue/composer so the user
+ * can't miss it — the agent is genuinely blocked on the gateway side
+ * until they choose. Four decisions match Hermes's wire format:
+ *
+ *   - `once`    — allow this specific call only
+ *   - `session` — allow for the rest of this chat session
+ *   - `always`  — persist as an approved pattern for this user
+ *   - `deny`    — refuse; agent gets an error from the tool
+ */
+const APPROVAL_DECISIONS: Array<{
+  value: HermesApprovalDecision;
+  label: string;
+  description: string;
+  variant: "primary" | "muted" | "destructive";
+}> = [
+  {
+    value: "once",
+    label: "Allow once",
+    description: "Allow this time only; ask again next time",
+    variant: "primary",
+  },
+  {
+    value: "session",
+    label: "Allow this session",
+    description: "Don't ask again for the rest of this chat",
+    variant: "muted",
+  },
+  {
+    value: "always",
+    label: "Always allow",
+    description: "Remember this command; don't ask again",
+    variant: "muted",
+  },
+  {
+    value: "deny",
+    label: "Deny",
+    description: "Refuse; the agent receives an error",
+    variant: "destructive",
+  },
+];
+
+function ApprovalBanner({
+  approvals,
+  inFlight,
+  error,
+  onRespond,
+  onDismissError,
+}: {
+  approvals: HermesApprovalRequest[];
+  inFlight: Record<string, HermesApprovalDecision>;
+  error: string | null;
+  onRespond: (
+    request: HermesApprovalRequest,
+    decision: HermesApprovalDecision,
+  ) => void;
+  onDismissError: () => void;
+}) {
+  return (
+    <div className="relative z-[1] flex flex-col gap-2 rounded-t-lg border border-input border-b-0 bg-background px-3 py-2.5 shadow-[0_-2px_10px_-2px_rgba(0,0,0,0.12)] dark:shadow-[0_-2px_14px_-2px_rgba(0,0,0,0.45)]">
+      {error && (
+        <div className="flex items-start justify-between gap-2 rounded border border-destructive/30 bg-destructive/5 px-2 py-1 text-[11px] text-destructive">
+          <span className="min-w-0 flex-1 break-words">{error}</span>
+          <button
+            type="button"
+            onClick={onDismissError}
+            className="shrink-0 rounded p-0.5 hover:bg-destructive/10"
+            aria-label="Dismiss error"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+      {approvals.map((req) => {
+        const pending = inFlight[req.approvalId];
+        const command = (req.command ?? "").trim();
+        const description = (req.description ?? req.reason ?? "").trim();
+        // Server-side timestamp arrives as Python time.time() (seconds);
+        // fall back to "now" if the gateway didn't include one so the
+        // countdown bar still renders sensibly.
+        const tsField = (req.raw as Record<string, unknown> | undefined)
+          ?.timestamp;
+        const requestedAt =
+          typeof tsField === "number" ? tsField * 1000 : Date.now();
+        return (
+          <div
+            key={req.approvalId}
+            className="relative flex flex-col gap-1.5 overflow-hidden rounded-md border border-border/70 bg-muted/40 p-2"
+          >
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-foreground">
+              <Brain className="h-3 w-3 shrink-0" />
+              <span>Approval needed</span>
+              {req.tool && (
+                <span className="font-mono text-[10px] text-muted-foreground">
+                  · {req.tool}
+                </span>
+              )}
+            </div>
+            {command && (
+              <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all rounded bg-foreground/[0.06] px-2 py-1 font-mono text-[11px] leading-snug text-foreground/90">
+                {command}
+              </pre>
+            )}
+            {description && (
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                {description}
+              </p>
+            )}
+            <div className="flex flex-wrap gap-1.5">
+              {APPROVAL_DECISIONS.map((d) => {
+                const isPending = pending === d.value;
+                const anyPending = pending != null;
+                return (
+                  <button
+                    key={d.value}
+                    type="button"
+                    disabled={anyPending}
+                    onClick={() => onRespond(req, d.value)}
+                    title={d.description}
+                    className={cn(
+                      "inline-flex h-6 select-none items-center gap-1 rounded-full border px-2 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                      d.variant === "primary" &&
+                        "border-foreground/30 bg-foreground/5 text-foreground hover:bg-foreground/10",
+                      d.variant === "muted" &&
+                        "border-border bg-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                      d.variant === "destructive" &&
+                        "border-destructive/40 bg-transparent text-destructive hover:bg-destructive/10",
+                      anyPending && "cursor-not-allowed opacity-60",
+                      isPending && "opacity-100",
+                    )}
+                  >
+                    {isPending && (
+                      <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                    )}
+                    <span>{d.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <ApprovalCountdownBar
+              requestedAt={requestedAt}
+              timeoutMs={HERMES_APPROVAL_GATEWAY_TIMEOUT_MS}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Thin progress bar pinned to the bottom border of an approval card.
+ * Width animates from 100% to 0% across the gateway-side approval
+ * timeout, so users can see at a glance how long they have left before
+ * the gateway auto-denies. Switches to a destructive color in the last
+ * 30 seconds. Reads wall-clock from `requestedAt` (gateway timestamp)
+ * so the bar still matches server-side reality after the user closes
+ * and re-opens the panel mid-approval.
+ *
+ * Default 5 minutes mirrors Hermes's `approvals.gateway_timeout` default
+ * (see `tools/approval.py:1219`). If the user overrode that setting, the
+ * bar will run out before the server gives up (we under-promise) — which
+ * is the safer direction than over-promising.
+ */
+/**
+ * Visual config for each outcome the user might see in the persistent
+ * approval-history strip. Kept as a single table so the chip + tooltip +
+ * color stay in sync — every outcome MUST have an entry or the chip
+ * renders blank.
+ */
+const APPROVAL_OUTCOME_INFO: Record<
+  ApprovalOutcome,
+  { label: string; tooltip: string; className: string }
+> = {
+  once: {
+    label: "Allowed once",
+    tooltip: "Approved for this execution only",
+    className:
+      "border-foreground/20 bg-foreground/[0.04] text-foreground",
+  },
+  session: {
+    label: "Allowed this session",
+    tooltip: "Won't ask again for the rest of this session",
+    className:
+      "border-foreground/20 bg-foreground/[0.04] text-foreground",
+  },
+  always: {
+    label: "Always allowed",
+    tooltip: "Added to the permanent allowlist (command_allowlist)",
+    className:
+      "border-foreground/20 bg-foreground/[0.04] text-foreground",
+  },
+  deny: {
+    label: "Denied",
+    tooltip: "User denied this command",
+    className:
+      "border-destructive/30 bg-destructive/5 text-destructive",
+  },
+  expired: {
+    label: "Expired",
+    tooltip:
+      "No response before gateway_timeout; the server auto-denied and unblocked",
+    className: "border-border bg-muted/40 text-muted-foreground",
+  },
+  failed: {
+    label: "Submit failed",
+    tooltip: "POST /v1/runs/{run_id}/approval request failed",
+    className:
+      "border-destructive/30 bg-destructive/5 text-destructive",
+  },
+};
+
+/**
+ * Single approval chip — one row showing outcome badge + truncated
+ * command + timestamp. Used both inline in the assistant timeline (so
+ * the approval reads as part of the conversation flow, between
+ * whatever text/tool events surrounded it) and at the bottom of the
+ * bubble when the verbose timeline isn't being rendered.
+ */
+function ApprovalRecordChip({ record }: { record: ApprovalRecord }) {
+  const command = (record.command ?? "").trim();
+  const meta = record.outcome ? APPROVAL_OUTCOME_INFO[record.outcome] : null;
+  const tsMs = record.decidedAt ?? record.requestedAt;
+  let timeLabel = "";
+  try {
+    timeLabel = new Date(tsMs).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    // Bad timestamp — ignore.
+  }
+  const tooltipBits: string[] = [];
+  if (record.tool) tooltipBits.push(`Tool: ${record.tool}`);
+  if (command) tooltipBits.push(`Command: ${command}`);
+  if (record.description) tooltipBits.push(`Reason: ${record.description}`);
+  if (meta) tooltipBits.push(meta.tooltip);
+  tooltipBits.push(`Requested: ${new Date(record.requestedAt).toLocaleString()}`);
+  if (record.decidedAt) {
+    tooltipBits.push(`Decided: ${new Date(record.decidedAt).toLocaleString()}`);
+  }
+  return (
+    <div
+      title={tooltipBits.join("\n")}
+      className="flex items-center gap-1.5 text-[10.5px] leading-none"
+    >
+      <span
+        className={cn(
+          "inline-flex h-5 shrink-0 items-center gap-1 rounded-full border px-1.5 font-medium",
+          meta
+            ? meta.className
+            : "border-border bg-muted/30 text-muted-foreground",
+        )}
+      >
+        {!meta && (
+          <Loader2
+            className="h-2.5 w-2.5 shrink-0 animate-spin"
+            aria-hidden
+          />
+        )}
+        <span>{meta ? meta.label : "Waiting"}</span>
+      </span>
+      {command && (
+        <code className="min-w-0 flex-1 truncate font-mono text-foreground/65">
+          {command}
+        </code>
+      )}
+      {timeLabel && (
+        <span className="shrink-0 tabular-nums text-muted-foreground/60">
+          {timeLabel}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Trailing audit-trail rendered at the bottom of the assistant bubble
+ * when there's no timeline view (i.e. the Thoughts toggle is off). In timeline
+ * mode each approval lands inline at the position it occurred — see
+ * the Bubble render — so this strip would be redundant and gets
+ * suppressed there.
+ */
+function ApprovalRecordList({ records }: { records: ApprovalRecord[] }) {
+  return (
+    <div className="mt-2 flex flex-col gap-1">
+      {records.map((rec) => (
+        <ApprovalRecordChip key={rec.approvalId} record={rec} />
+      ))}
+    </div>
+  );
+}
+
+function ApprovalCountdownBar({
+  requestedAt,
+  timeoutMs,
+}: {
+  requestedAt: number;
+  timeoutMs: number;
+}) {
+  // Cheap tick state: 500ms refresh keeps the bar visibly moving without
+  // flooding React with redraws. setInterval persists across panel
+  // reopens because the component is recreated when the banner is
+  // re-rendered with the same `requestedAt`.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((t) => t + 1), 500);
+    return () => window.clearInterval(id);
+  }, []);
+  const elapsed = Date.now() - requestedAt;
+  const remaining = Math.max(0, timeoutMs - elapsed);
+  const percent = timeoutMs > 0 ? (remaining / timeoutMs) * 100 : 0;
+  const warning = remaining > 0 && remaining < 30_000;
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute bottom-0 left-0 right-0 h-px"
+    >
+      <div
+        className={cn(
+          "h-full transition-[width] duration-500 ease-linear",
+          remaining === 0
+            ? "bg-destructive/50"
+            : warning
+              ? "bg-destructive/60"
+              : "bg-foreground/40",
+        )}
+        style={{ width: `${percent}%` }}
+      />
     </div>
   );
 }
@@ -2791,6 +3815,10 @@ function Bubble({
     const progressMap = new Map(
       toolProgress.map((p) => [p.toolCallId, p] as const),
     );
+    const approvalRecords = m.hermesApprovalRecords ?? [];
+    const approvalMap = new Map(
+      approvalRecords.map((r) => [r.approvalId, r] as const),
+    );
     return (
       <div className="min-w-0 px-1 py-1 text-sm">
         {hasReasoningBlock && (
@@ -2850,9 +3878,17 @@ function Bubble({
                       </Streamdown>
                     );
                   }
-                  const ev = progressMap.get(item.toolCallId);
-                  if (!ev) return null;
-                  return <ToolChip key={item.id} event={ev} />;
+                  if (item.kind === "tool") {
+                    const ev = progressMap.get(item.toolCallId);
+                    if (!ev) return null;
+                    return <ToolChip key={item.id} event={ev} />;
+                  }
+                  // kind === "approval"
+                  const rec = approvalMap.get(item.approvalId);
+                  if (!rec) return null;
+                  return (
+                    <ApprovalRecordChip key={item.id} record={rec} />
+                  );
                 })}
               </div>
             );
@@ -2870,6 +3906,19 @@ function Bubble({
             </Streamdown>
           )
         )}
+        {/*
+          Approval audit-trail. When the timeline is rendered (Thoughts toggle on),
+          each approval already appears inline at the position it
+          happened, so this trailing strip would be a duplicate. Falls
+          back to a strip at the bottom only when there's no timeline —
+          better than dropping the audit-trail entirely for
+          non-timeline users.
+        */}
+        {!hasTimeline &&
+          m.hermesApprovalRecords &&
+          m.hermesApprovalRecords.length > 0 && (
+            <ApprovalRecordList records={m.hermesApprovalRecords} />
+          )}
         {/*
           Persist-to-bubble teleport chip for delegate-and-forget runs.
           Stamped on the message after the stream resolves (see send()),

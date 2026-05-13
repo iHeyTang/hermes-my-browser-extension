@@ -206,7 +206,8 @@ async def _main(port: int, http_attach_port: int) -> None:
             "bridge HTTP on http://127.0.0.1:%d — POST /attach, "
             "GET /hermes/model-catalog, GET /hermes/provider-models, "
             "GET/POST /hermes/main-provider-settings, GET/POST /hermes/main-model, "
-            "GET/POST /hermes/auxiliary-models",
+            "GET/POST /hermes/auxiliary-models, "
+            "GET/POST/DELETE /hermes/cron/jobs[/{id}[/pause|resume|trigger]]",
             http_attach_port,
         )
 

@@ -11,10 +11,13 @@
  */
 
 import type {
+  HermesApprovalRequest,
   HermesToolProgress,
   StreamedToolCall,
 } from "~lib/chat/hermes-client";
 import type { ChatMessage } from "~lib/types";
+
+export type { HermesApprovalRequest };
 
 export const CHAT_PORT_NAME = "hermes-chat";
 
@@ -36,7 +39,8 @@ export interface SubmitPayload {
  */
 export type AssistantTimelineItem =
   | { kind: "text"; id: string; text: string }
-  | { kind: "tool"; id: string; toolCallId: string };
+  | { kind: "tool"; id: string; toolCallId: string }
+  | { kind: "approval"; id: string; approvalId: string };
 
 export interface ChatRuntimeError {
   message: string;
@@ -65,6 +69,21 @@ export interface ChatRuntimeState {
    */
   agentFinalUrl: string | null;
   agentFinalTitle: string | null;
+  /**
+   * Approval requests the gateway emitted that haven't been answered yet.
+   * Survives panel close (via `chrome.storage.session`) so reopening
+   * during a paused agent run shows the prompt again instead of leaving
+   * the agent silently blocked.
+   */
+  pendingApprovals: HermesApprovalRequest[];
+  /**
+   * `X-Hermes-Run-Id` from the in-flight or last-completed chat
+   * completion request. Required to POST approval decisions back
+   * (`/v1/runs/{runId}/approval`). May be `null` on older gateways that
+   * don't emit the header — in that case the approval event's own
+   * `runId` field is the only source.
+   */
+  runId: string | null;
   startedAt: number;
   updatedAt: number;
 }
@@ -75,7 +94,12 @@ export type ClientToBgMessage =
   | { type: "snapshot"; sessionId: string }
   | { type: "submit"; payload: SubmitPayload }
   | { type: "abort"; sessionId: string }
-  | { type: "clear"; sessionId: string };
+  | { type: "clear"; sessionId: string }
+  | {
+      type: "clearApproval";
+      sessionId: string;
+      approvalId: string;
+    };
 
 /** Background → panel frames. */
 export type BgToClientMessage =
@@ -94,6 +118,9 @@ export type StreamEvent =
   | { kind: "toolCalls"; calls: StreamedToolCall[] }
   | { kind: "hermesToolProgress"; event: HermesToolProgress }
   | { kind: "session"; sessionId: string }
+  | { kind: "run"; runId: string }
+  | { kind: "approvalRequest"; request: HermesApprovalRequest }
+  | { kind: "approvalResolved"; approvalId: string }
   | {
       kind: "done";
       /**

@@ -44,6 +44,71 @@ def _load_yaml_module():
     return yaml
 
 
+def _resolve_context_lengths(
+    *, model: str, provider: str, base_url: Optional[str], config_ctx: Optional[int]
+) -> Dict[str, int]:
+    """Resolve auto-detected + effective context lengths via upstream.
+
+    Mirrors what ``hermes_cli/web_server.py:/api/model/info`` does:
+    consult ``agent.model_metadata.get_model_context_length`` for the
+    auto value (independent of any config override), keep the
+    config-supplied override separately so the UI can show both, and
+    return ``effective = config or auto``. Returns zeros when upstream
+    isn't importable so the HTTP shape stays consistent.
+    """
+    auto_ctx = 0
+    if model:
+        try:
+            from agent.model_metadata import get_model_context_length  # type: ignore
+
+            auto_ctx = int(
+                get_model_context_length(
+                    model=model,
+                    base_url=base_url or "",
+                    provider=provider or "",
+                    config_context_length=None,
+                )
+                or 0
+            )
+        except Exception:
+            auto_ctx = 0
+    cfg_ctx = int(config_ctx) if isinstance(config_ctx, int) and config_ctx > 0 else 0
+    effective = cfg_ctx if cfg_ctx > 0 else auto_ctx
+    return {
+        "auto_context_length": auto_ctx,
+        "config_context_length": cfg_ctx,
+        "effective_context_length": effective,
+    }
+
+
+def _resolve_capabilities(*, model: str, provider: str) -> Dict[str, Any]:
+    """Best-effort capability lookup via ``agent.models_dev``.
+
+    Field shape matches upstream's ``/api/model/info.capabilities`` block.
+    Returns ``{}`` (not ``None``) when the model isn't known to
+    ``models.dev`` so the frontend can treat absence as "unknown" rather
+    than "unsupported".
+    """
+    if not model:
+        return {}
+    try:
+        from agent.models_dev import get_model_capabilities  # type: ignore
+
+        mc = get_model_capabilities(provider=provider or "", model=model)
+        if mc is None:
+            return {}
+        return {
+            "supports_tools": bool(getattr(mc, "supports_tools", False)),
+            "supports_vision": bool(getattr(mc, "supports_vision", False)),
+            "supports_reasoning": bool(getattr(mc, "supports_reasoning", False)),
+            "context_window": getattr(mc, "context_window", None),
+            "max_output_tokens": getattr(mc, "max_output_tokens", None),
+            "model_family": getattr(mc, "model_family", None),
+        }
+    except Exception:
+        return {}
+
+
 def read_main_model() -> Dict[str, Any]:
     path = _config_yaml_path()
     if not path.exists():
@@ -53,6 +118,10 @@ def read_main_model() -> Dict[str, Any]:
             "provider": "auto",
             "model": "",
             "base_url": None,
+            "auto_context_length": 0,
+            "config_context_length": 0,
+            "effective_context_length": 0,
+            "capabilities": {},
         }
     yaml = _load_yaml_module()
     try:
@@ -65,6 +134,10 @@ def read_main_model() -> Dict[str, Any]:
             "provider": "auto",
             "model": "",
             "base_url": None,
+            "auto_context_length": 0,
+            "config_context_length": 0,
+            "effective_context_length": 0,
+            "capabilities": {},
         }
     if not isinstance(cfg, dict):
         cfg = {}
@@ -86,12 +159,22 @@ def read_main_model() -> Dict[str, Any]:
         bu = str(bu)
     if isinstance(bu, str) and not bu.strip():
         bu = None
+    config_ctx_raw = block.get("context_length")
+    ctx = _resolve_context_lengths(
+        model=name or "",
+        provider=prov,
+        base_url=bu,
+        config_ctx=config_ctx_raw if isinstance(config_ctx_raw, int) else None,
+    )
+    caps = _resolve_capabilities(model=name or "", provider=prov)
     return {
         "config_path": str(path),
         "config_exists": True,
         "provider": prov,
         "model": name or "",
         "base_url": bu,
+        **ctx,
+        "capabilities": caps,
     }
 
 
@@ -151,6 +234,10 @@ AUXILIARY_SLOTS: List[str] = [
     "mcp",
     "title_generation",
 ]
+# Upstream `/api/model/auxiliary` shape is ``{task, provider, model, base_url}``
+# per slot. We keep ``api_key`` as a Hermes-Browser-Extension-only field so the
+# plugin can carry per-slot keys in ``<plugin-root>/.env`` — upstream doesn't
+# offer an equivalent.
 _AUX_SLOT_FIELDS = ("provider", "model", "base_url", "api_key")
 
 
@@ -163,12 +250,31 @@ def _read_aux_slot(block: Dict[str, Any]) -> Dict[str, str]:
 
 
 def read_auxiliary_models() -> Dict[str, Any]:
+    """Return auxiliary-slot configuration in upstream-aligned shape.
+
+    Output mirrors upstream ``GET /api/model/auxiliary``::
+
+        {
+          "tasks": [
+            {"task": "vision", "provider": "auto", "model": "", "base_url": "", "api_key": ""},
+            ...
+          ],
+          "main": {"provider": "openrouter", "model": "anthropic/claude-opus-4.7"},
+        }
+
+    The extra ``api_key`` per task is bridge-only (see ``_AUX_SLOT_FIELDS``
+    comment); upstream's task block doesn't include it.
+    """
     path = _config_yaml_path()
-    empty_slots = {s: {f: "" for f in _AUX_SLOT_FIELDS} for s in AUXILIARY_SLOTS}
+    empty_tasks: List[Dict[str, str]] = [
+        {"task": slot, **{f: "" for f in _AUX_SLOT_FIELDS}}
+        for slot in AUXILIARY_SLOTS
+    ]
     base: Dict[str, Any] = {
         "config_path": str(path),
         "config_exists": path.exists(),
-        "slots": empty_slots,
+        "tasks": empty_tasks,
+        "main": {"provider": "", "model": ""},
     }
     if not path.exists():
         return base
@@ -179,33 +285,56 @@ def read_auxiliary_models() -> Dict[str, Any]:
         return {**base, "config_exists": True, "error": str(e)}
     if not isinstance(cfg, dict):
         cfg = {}
+
     aux_block = cfg.get("auxiliary")
     if not isinstance(aux_block, dict):
         aux_block = {}
-    slots: Dict[str, Dict[str, str]] = {}
+    tasks: List[Dict[str, str]] = []
     for slot in AUXILIARY_SLOTS:
         sb = aux_block.get(slot)
-        slots[slot] = (
-            _read_aux_slot(sb) if isinstance(sb, dict) else {f: "" for f in _AUX_SLOT_FIELDS}
+        row = (
+            _read_aux_slot(sb)
+            if isinstance(sb, dict)
+            else {f: "" for f in _AUX_SLOT_FIELDS}
         )
+        tasks.append({"task": slot, **row})
+
+    # Main slot mirrored for convenience — matches upstream so the UI can
+    # render the main model + aux slots side-by-side without a second
+    # request.
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        main_name = model_cfg.get("default") or model_cfg.get("model") or ""
+        main = {
+            "provider": str(model_cfg.get("provider", "") or ""),
+            "model": str(main_name or ""),
+        }
+    else:
+        main = {
+            "provider": "",
+            "model": str(model_cfg) if model_cfg else "",
+        }
+
     return {
         "config_path": str(path),
         "config_exists": True,
-        "slots": slots,
+        "tasks": tasks,
+        "main": main,
     }
 
 
 def write_auxiliary_slot(
-    slot: str,
+    task: str,
     *,
     provider: Optional[str] = None,
     model: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
-    slot = slot.strip()
-    if slot not in AUXILIARY_SLOTS:
-        raise ValueError(f"unknown auxiliary slot: {slot!r}. Valid: {AUXILIARY_SLOTS}")
+    """Write one auxiliary task slot. Param name ``task`` matches upstream."""
+    task = task.strip()
+    if task not in AUXILIARY_SLOTS:
+        raise ValueError(f"unknown auxiliary task: {task!r}. Valid: {AUXILIARY_SLOTS}")
     path = _config_yaml_path()
     yaml = _load_yaml_module()
     cfg: Dict[str, Any] = {}
@@ -221,7 +350,7 @@ def write_auxiliary_slot(
     if not isinstance(aux_block, dict):
         aux_block = {}
     aux_block = dict(aux_block)
-    slot_block = aux_block.get(slot)
+    slot_block = aux_block.get(task)
     if not isinstance(slot_block, dict):
         slot_block = {}
     slot_block = dict(slot_block)
@@ -235,7 +364,7 @@ def write_auxiliary_slot(
     _set_str(slot_block, "base_url", base_url)
     _set_str(slot_block, "api_key", api_key)
 
-    aux_block[slot] = slot_block
+    aux_block[task] = slot_block
     cfg["auxiliary"] = aux_block
     path.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.dump(cfg, default_flow_style=False, allow_unicode=True, sort_keys=False)

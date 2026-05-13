@@ -5,24 +5,27 @@
  *
  * Storage model: **path-based, not inline**.
  *
- * The extension never embeds binary payloads in the chat completion request.
- * Instead, every attached file is uploaded over HTTP to the bridge process
+ * The extension never embeds binary payloads in the chat completion request
+ * and never uses OpenAI's multimodal `image_url` content parts. Instead,
+ * every attached file is uploaded over HTTP to the bridge process
  * (`POST /attach`), which writes it under `~/.hermes/plugins/<plugin>/attachments/<session>/`
- * and returns the absolute path. The chat prompt only references that path
- * via a `<file-attachment path="...">` system-message block. The agent uses
- * its own server-side tools (read_file / pdf-text / image / OCR / …) to
- * actually read the bytes if it cares about them.
+ * and returns the absolute path. The chat prompt references that path
+ * inside a `<file-attachment>` text block appended to the user message
+ * content. The agent uses its own server-side tools (`vision_analyze` /
+ * `read_file` / pdf-text / OCR / …) to read the bytes on demand.
  *
  * Why path-based for *everything*, including images:
- *   - Token-cheap regardless of file size
+ *   - Token-cheap regardless of file size — a 30-image paste does not
+ *     balloon context; the agent decides which ones to actually read
  *   - Uniform mental model — every attachment looks the same to the agent
  *   - Mirrors `my_browser_screenshot`, which already returns a `/tmp/...png`
  *     path and lets the agent decide what to do with it
- *   - Trade-off: the model no longer "sees" images directly through OpenAI's
- *     multimodal API. Vision goes through whatever image tool the agent has.
- *     If we ever need the inline-image flow back, flip
- *     `INLINE_IMAGES_AS_DATA_URL` in `format.ts` and the path block stays
- *     untouched alongside.
+ *   - Single wire shape — `{role:"user", content:"<string>"}` only; we
+ *     never produce a synthetic system-role message or a multimodal
+ *     content-parts array
+ *   - Trade-off: the model never "sees" images directly. Quality of image
+ *     understanding depends on whatever vision tool the agent picks
+ *     (`vision_analyze` → `auxiliary.vision` model in Hermes config).
  *
  * `kind` is purely a *presentation* hint — it picks the chip icon and
  * decides whether we capture a thumbnail vs. a text snippet at intake time.

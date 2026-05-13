@@ -83,12 +83,12 @@ export function SettingsGateway() {
   return (
     <div className="space-y-10">
       <p className="text-xs text-muted-foreground">
-        侧边栏对话使用的{" "}
+        The side panel chat talks to{" "}
         <span className="font-medium text-foreground">
           hermes-agent-gateway
         </span>{" "}
-        （OpenAI 兼容 HTTP）。Hermes CLI 模型与密钥请在{" "}
-        <span className="font-medium text-foreground">Models</span> 中配置。
+        (OpenAI-compatible HTTP). Configure Hermes CLI models and keys in the{" "}
+        <span className="font-medium text-foreground">Models</span> tab.
       </p>
 
       <section className="space-y-3">
@@ -104,8 +104,8 @@ export function SettingsGateway() {
             placeholder={DEFAULT_HERMES_API_BASE}
           />
           <p className="text-xs text-muted-foreground">
-            仅影响侧边栏直连网关（默认端口 8642）。与 Models 页中的 Hermes
-            配置不同。
+            Only affects the side panel's direct gateway connection (default port
+            8642). Separate from the Hermes config on the Models tab.
           </p>
         </div>
         <div className="space-y-1.5">
@@ -157,10 +157,10 @@ export function SettingsGateway() {
           />
         </div>
         <p className="text-xs text-muted-foreground">
-          多会话在侧边栏{" "}
-          <span className="font-medium text-foreground">Sessions</span>{" "}
-          中管理；请求会带{" "}
-          <code className="font-mono">X-Hermes-Session-Id</code>。
+          Multiple sessions are managed in the side panel's{" "}
+          <span className="font-medium text-foreground">Sessions</span> view;
+          each request carries an{" "}
+          <code className="font-mono">X-Hermes-Session-Id</code> header.
         </p>
         <div className="flex items-center gap-2">
           <Button onClick={() => void save()}>Save</Button>
@@ -175,13 +175,13 @@ export function SettingsGateway() {
       <section className="space-y-2 text-sm">
         <h3 className="text-sm font-medium text-foreground">Bridge</h3>
         <p className="text-muted-foreground">
-          WebSocket 桥接固定为{" "}
+          The WebSocket bridge is fixed at{" "}
           <code className="font-mono text-foreground">ws://127.0.0.1:9393</code>
-          。若需改端口，在 Hermes 侧设置{" "}
+          . To use a different port, set{" "}
           <code className="font-mono text-foreground">
             MY_BROWSER_BRIDGE_PORT
           </code>{" "}
-          并重新构建扩展。
+          on the Hermes side and rebuild the extension.
         </p>
       </section>
     </div>

@@ -39,13 +39,18 @@ export interface HermesSkillEntry {
   description: string;
   category: string | null;
   tags: string[];
+  /** Absolute path to the skill's ``SKILL.md`` (drives the file viewer). */
   path: string;
-  source: "local" | "external" | string;
   origin: HermesSkillOrigin;
   platforms: string[] | null;
-  compatible: boolean;
-  disabled: boolean;
-  active: boolean;
+  /**
+   * Effective enabled state, matching upstream ``/api/skills``: a skill is
+   * enabled when it's platform-compatible AND not in
+   * ``config.yaml/skills.disabled``. Platform-incompatible skills are
+   * filtered out upstream-side and never appear in the list, so this is
+   * the only on/off signal the UI needs.
+   */
+  enabled: boolean;
   version: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -54,9 +59,8 @@ export interface HermesSkillEntry {
 
 export interface HermesSkillsTotals {
   total: number;
-  active: number;
+  enabled: number;
   disabled: number;
-  incompatible: number;
 }
 
 export interface HermesSkillsResponse {
@@ -86,9 +90,8 @@ function responseError(
 
 const EMPTY_TOTALS: HermesSkillsTotals = {
   total: 0,
-  active: 0,
+  enabled: 0,
   disabled: 0,
-  incompatible: 0,
 };
 
 export async function getHermesSkills(): Promise<HermesSkillsResponse> {
@@ -197,6 +200,44 @@ export async function getHermesSkillFiles(
       files: [],
       error: String((e as Error)?.message || e),
     };
+  }
+}
+
+export interface HermesSkillToggleResponse {
+  ok: boolean;
+  name?: string;
+  enabled?: boolean;
+  error?: string;
+}
+
+/**
+ * Flip a skill's enabled state. Persists through ``config.yaml`` via the
+ * bridge, which in turn calls the upstream
+ * ``hermes_cli.skills_config.save_disabled_skills`` helper — the same
+ * canonical write path Hermes's own dashboard uses.
+ *
+ * `enabled=false` adds the name to ``config.yaml/skills.disabled``;
+ * `enabled=true` removes it. Currently running agents are NOT
+ * retroactively affected — the change takes effect on the next session.
+ */
+export async function postHermesSkillToggle(
+  name: string,
+  enabled: boolean,
+): Promise<HermesSkillToggleResponse> {
+  try {
+    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/skills/toggle`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, enabled }),
+    });
+    const data = (await res.json()) as HermesSkillToggleResponse;
+    if (!res.ok || data.ok === false) {
+      return { ok: false, error: responseError(res, data) };
+    }
+    return { ok: true, name: data.name, enabled: data.enabled };
+  } catch (e) {
+    return { ok: false, error: String((e as Error)?.message || e) };
   }
 }
 

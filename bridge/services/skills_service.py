@@ -1,19 +1,28 @@
 """Read-only enumeration of skills available to the current Hermes Agent.
 
-Mirrors the discovery rules in ``agent.skill_utils`` and ``tools.skills_tool``
-without importing those modules:
+Thin wrapper around upstream skill discovery + disabled-state config:
 
-  * Scan ``$HERMES_HOME/skills`` and any directories listed under
-    ``skills.external_dirs`` in ``config.yaml``.
-  * Walk recursively; exclude ``.git``, ``.github``, ``.hub`` and ``.archive``.
-  * Each ``SKILL.md`` carries a YAML frontmatter with ``name``, ``description``
-    and an optional ``platforms`` list (``macos`` → ``darwin`` etc.).
-  * Skills whose name is in ``skills.disabled`` (or
-    ``skills.platform_disabled.<HERMES_PLATFORM>``) are marked disabled.
-  * Skills whose ``platforms`` field excludes the current OS are marked
-    incompatible.
+  * ``agent.skill_utils.iter_skill_index_files`` — walks ``$HERMES_HOME/skills``
+    and external dirs for ``SKILL.md`` files.
+  * ``agent.skill_utils.get_external_skills_dirs`` — expands
+    ``skills.external_dirs`` from ``config.yaml``.
+  * ``tools.skills_tool._parse_frontmatter`` / ``skill_matches_platform`` —
+    YAML frontmatter parse + platform compatibility filter.
+  * ``hermes_cli.skills_config.get_disabled_skills`` / ``save_disabled_skills``
+    — the canonical disabled-set read/write.
+  * ``hermes_cli.config.load_config`` — config.yaml read with schema-aware
+    defaults.
 
-The current agent's active skill set = compatible AND not disabled.
+This module supplies what those upstream pieces don't expose at all on the
+HTTP surface: provenance (``origin``: bundled / hub / agent / manual / external),
+timestamps (``created_at`` / ``updated_at`` / ``timestamp_source``), tag
+extraction, plus the per-skill directory browser used by the options page.
+
+Field shape matches the upstream ``/api/skills`` route where it exists
+(``name`` / ``description`` / ``category`` / ``enabled``) — see the upstream
+`hermes_cli/web_server.py:2895` handler. We intentionally do NOT carry a
+backwards-compat translation layer; the frontend reads the upstream-aligned
+shape directly.
 """
 
 from __future__ import annotations
@@ -21,12 +30,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
-
-import yaml
 
 from ..adapters.hermes_core import hermes_home
 
@@ -34,84 +40,108 @@ logger = logging.getLogger("my-browser-bridge")
 
 EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
 
-# Mirrors agent.skill_utils.PLATFORM_MAP.
-PLATFORM_MAP = {
-    "macos": "darwin",
-    "linux": "linux",
-    "windows": "win32",
-}
-
-MAX_FRONTMATTER_BYTES = 4096
 MAX_DESCRIPTION_CHARS = 240
 
 
-def _read_config() -> Dict[str, Any]:
-    path = hermes_home() / "config.yaml"
-    if not path.exists():
-        return {}
+# ---------------------------------------------------------------------------
+# Upstream-backed helpers — defensive imports so the bridge can still
+# return something useful when running outside a fresh Hermes install.
+# ---------------------------------------------------------------------------
+
+
+def _load_config() -> Dict[str, Any]:
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to parse %s: %s", path, exc)
+        from hermes_cli.config import load_config  # type: ignore
+
+        cfg = load_config()
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception as exc:
+        logger.warning("hermes_cli.config.load_config failed: %s", exc)
         return {}
-    return data if isinstance(data, dict) else {}
 
 
-def _resolve_platform_label() -> str:
-    """Return the active platform label (matches HERMES_PLATFORM precedence)."""
-    explicit = os.getenv("HERMES_PLATFORM") or os.getenv("HERMES_SESSION_PLATFORM")
-    if explicit:
-        return explicit.strip()
-    return ""
+def _load_disabled_skill_names() -> Set[str]:
+    """Disabled skill set, sourced from the canonical config helper."""
+    try:
+        from hermes_cli.skills_config import get_disabled_skills  # type: ignore
+
+        return set(get_disabled_skills(_load_config()))
+    except Exception as exc:
+        logger.warning("get_disabled_skills failed: %s", exc)
+        return set()
 
 
-def _skill_matches_current_os(frontmatter: Dict[str, Any]) -> bool:
-    platforms = frontmatter.get("platforms")
-    if not platforms:
+def _iter_skill_md(root: Path):
+    """Walk a skills dir for ``SKILL.md`` files via the upstream iterator."""
+    try:
+        from agent.skill_utils import iter_skill_index_files  # type: ignore
+
+        yield from iter_skill_index_files(root, "SKILL.md")
+    except Exception as exc:
+        logger.warning("iter_skill_index_files unavailable: %s", exc)
+        # Manual fallback so this module never silently returns []
+        # just because Hermes isn't importable in this process.
+        if not root.exists():
+            return
+        for current, dirs, files in os.walk(root, followlinks=True):
+            dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+            if "SKILL.md" in files:
+                yield Path(current) / "SKILL.md"
+
+
+def _external_skills_dirs() -> List[Path]:
+    try:
+        from agent.skill_utils import get_external_skills_dirs  # type: ignore
+
+        return [Path(p) for p in get_external_skills_dirs()]
+    except Exception as exc:
+        logger.warning("get_external_skills_dirs failed: %s", exc)
+        return []
+
+
+def _parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
+    try:
+        from tools.skills_tool import _parse_frontmatter as _parser  # type: ignore
+
+        fm, body = _parser(text)
+        if not isinstance(fm, dict):
+            fm = {}
+        return fm, body
+    except Exception:
+        # Local fallback so callers always get a parsed-ish result.
+        if not text.startswith("---"):
+            return {}, text
+        end = text.find("\n---", 3)
+        if end == -1:
+            return {}, text
+        import yaml  # type: ignore
+
+        try:
+            parsed = yaml.safe_load(text[3:end].lstrip("\n")) or {}
+        except Exception:  # noqa: BLE001
+            parsed = {}
+        if not isinstance(parsed, dict):
+            parsed = {}
+        return parsed, text[end + 4 :].lstrip("\n")
+
+
+def _matches_platform(frontmatter: Dict[str, Any]) -> bool:
+    try:
+        from tools.skills_tool import skill_matches_platform  # type: ignore
+
+        return bool(skill_matches_platform(frontmatter))
+    except Exception:
+        # Permissive fallback — better to show the skill than hide it.
         return True
-    if not isinstance(platforms, list):
-        platforms = [platforms]
-    current = sys.platform
-    for p in platforms:
-        normalized = str(p).lower().strip()
-        mapped = PLATFORM_MAP.get(normalized, normalized)
-        if current.startswith(mapped):
-            return True
-    return False
 
 
-def _disabled_set(config: Dict[str, Any], platform: str) -> Set[str]:
-    skills_cfg = config.get("skills")
-    if not isinstance(skills_cfg, dict):
-        return set()
-    if platform:
-        platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(platform)
-        if platform_disabled is not None:
-            return _normalize_str_set(platform_disabled)
-    return _normalize_str_set(skills_cfg.get("disabled"))
-
-
-def _normalize_str_set(values: Any) -> Set[str]:
-    if values is None:
-        return set()
-    if isinstance(values, str):
-        values = [values]
-    if not isinstance(values, list):
-        return set()
-    out: Set[str] = set()
-    for v in values:
-        s = str(v).strip()
-        if s:
-            out.add(s)
-    return out
+# ---------------------------------------------------------------------------
+# Provenance + timestamp helpers — Hermes' upstream HTTP surface doesn't
+# expose these, so the logic stays local.
+# ---------------------------------------------------------------------------
 
 
 def _load_bundled_names() -> Set[str]:
-    """Names seeded from the Hermes-bundled skills manifest.
-
-    Format mirrors ``hermes-agent/tools/skill_usage.py::_read_bundled_manifest_names``:
-    one ``name:hash`` per line.
-    """
     path = hermes_home() / "skills" / ".bundled_manifest"
     if not path.exists():
         return set()
@@ -125,47 +155,39 @@ def _load_bundled_names() -> Set[str]:
             if name:
                 out.add(name)
     except OSError as exc:
-        logger.debug("failed to read %s: %s", path, exc)
+        logger.debug("read .bundled_manifest: %s", exc)
     return out
 
 
 def _load_usage_records() -> Dict[str, Dict[str, Any]]:
-    """Whole ``.usage.json`` mapping name → record (created_at, last_patched_at, …)."""
     path = hermes_home() / "skills" / ".usage.json"
     if not path.exists():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        logger.debug("failed to parse %s: %s", path, exc)
+        logger.debug("parse .usage.json: %s", exc)
         return {}
     if not isinstance(data, dict):
         return {}
-    return {
-        str(name): rec for name, rec in data.items() if isinstance(rec, dict)
-    }
+    return {str(n): r for n, r in data.items() if isinstance(r, dict)}
 
 
 def _load_hub_records() -> Dict[str, Dict[str, Any]]:
-    """``.hub/lock.json`` installed map, name → record (installed_at, updated_at, …)."""
     path = hermes_home() / "skills" / ".hub" / "lock.json"
     if not path.exists():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        logger.debug("failed to parse %s: %s", path, exc)
+        logger.debug("parse hub/lock.json: %s", exc)
         return {}
     if not isinstance(data, dict):
         return {}
     installed = data.get("installed")
     if not isinstance(installed, dict):
         return {}
-    return {
-        str(name): rec
-        for name, rec in installed.items()
-        if isinstance(rec, dict)
-    }
+    return {str(n): r for n, r in installed.items() if isinstance(r, dict)}
 
 
 def _fs_birth_iso(path: Path) -> Optional[str]:
@@ -193,21 +215,20 @@ def _fs_mtime_iso(path: Path) -> Optional[str]:
         return None
 
 
+def _as_iso(value: Any) -> Optional[str]:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def _resolve_timestamps(
     name: str,
     skill_md: Path,
     usage: Dict[str, Dict[str, Any]],
     hub: Dict[str, Dict[str, Any]],
 ) -> Tuple[Optional[str], Optional[str], str]:
-    """Resolve (created_at, updated_at, source) using a multi-tier lookup.
-
-    Order: ``.usage.json`` (most authoritative — set by Hermes Agent itself) →
-    ``.hub/lock.json`` (covers Hub-installed skills) → file-system stat
-    (covers bundled / manual where nothing else recorded a timestamp).
-    """
     u = usage.get(name) or {}
     h = hub.get(name) or {}
-
     created = (
         _as_iso(u.get("created_at"))
         or _as_iso(h.get("installed_at"))
@@ -218,7 +239,6 @@ def _resolve_timestamps(
         or _as_iso(h.get("updated_at"))
         or _fs_mtime_iso(skill_md)
     )
-
     if u.get("created_at") or u.get("last_patched_at"):
         source = "usage"
     elif h.get("installed_at") or h.get("updated_at"):
@@ -228,85 +248,22 @@ def _resolve_timestamps(
     return created, updated, source
 
 
-def _as_iso(value: Any) -> Optional[str]:
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
-
-
-def _external_skills_dirs(config: Dict[str, Any]) -> List[Path]:
-    skills_cfg = config.get("skills") if isinstance(config, dict) else None
-    if not isinstance(skills_cfg, dict):
-        return []
-    raw = skills_cfg.get("external_dirs")
-    if not raw:
-        return []
-    if isinstance(raw, str):
-        raw = [raw]
-    if not isinstance(raw, list):
-        return []
-    home = hermes_home()
-    local = (home / "skills").resolve()
-    seen: Set[Path] = set()
-    out: List[Path] = []
-    for entry in raw:
-        s = str(entry).strip()
-        if not s:
-            continue
-        expanded = os.path.expanduser(os.path.expandvars(s))
-        p = Path(expanded)
-        if not p.is_absolute():
-            p = (home / p).resolve()
-        else:
-            p = p.resolve()
-        if p == local or p in seen:
-            continue
-        if p.is_dir():
-            seen.add(p)
-            out.append(p)
-    return out
-
-
-def _iter_skill_md(root: Path):
-    if not root.exists():
-        return
-    for current, dirs, files in os.walk(root, followlinks=True):
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
-        if "SKILL.md" in files:
-            yield Path(current) / "SKILL.md"
-
-
-def _parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
-    if not text.startswith("---"):
-        return {}, text
-    end = text.find("\n---", 3)
-    if end == -1:
-        return {}, text
-    fm_raw = text[3:end].lstrip("\n")
-    body = text[end + 4 :].lstrip("\n")
-    try:
-        parsed = yaml.safe_load(fm_raw) or {}
-    except Exception:  # noqa: BLE001
-        parsed = {}
-    if not isinstance(parsed, dict):
-        parsed = {}
-    return parsed, body
-
-
-def _extract_description(frontmatter: Dict[str, Any], body: str) -> str:
-    desc = frontmatter.get("description")
-    if isinstance(desc, str) and desc.strip():
-        result = desc.strip()
-    else:
-        result = ""
-        for line in body.strip().splitlines():
-            ln = line.strip()
-            if ln and not ln.startswith("#"):
-                result = ln
-                break
-    if len(result) > MAX_DESCRIPTION_CHARS:
-        result = result[: MAX_DESCRIPTION_CHARS - 3] + "..."
-    return result
+def _classify_origin(
+    name: str,
+    is_external: bool,
+    bundled: Set[str],
+    hub_names: Set[str],
+    agent_names: Set[str],
+) -> str:
+    if is_external:
+        return "external"
+    if name in agent_names:
+        return "agent"
+    if name in hub_names:
+        return "hub"
+    if name in bundled:
+        return "bundled"
+    return "manual"
 
 
 def _extract_tags(frontmatter: Dict[str, Any]) -> List[str]:
@@ -326,53 +283,55 @@ def _extract_tags(frontmatter: Dict[str, Any]) -> List[str]:
     return [str(t).strip() for t in raw if str(t).strip()][:32]
 
 
+def _extract_description(frontmatter: Dict[str, Any], body: str) -> str:
+    desc = frontmatter.get("description")
+    if isinstance(desc, str) and desc.strip():
+        result = desc.strip()
+    else:
+        result = ""
+        for line in body.strip().splitlines():
+            ln = line.strip()
+            if ln and not ln.startswith("#"):
+                result = ln
+                break
+    if len(result) > MAX_DESCRIPTION_CHARS:
+        result = result[: MAX_DESCRIPTION_CHARS - 3] + "..."
+    return result
+
+
 def _category_from_path(skill_md: Path, root: Path) -> Optional[str]:
     try:
         rel = skill_md.relative_to(root)
     except ValueError:
         return None
     parts = rel.parts
-    # rel = <category?>/.../<skill_dir>/SKILL.md ; category = first part when nested.
     if len(parts) <= 2:
         return None
     return parts[0]
 
 
-def _classify_origin(
-    name: str,
-    source: str,
-    bundled: Set[str],
-    hub: Set[str],
-    agent_created: Set[str],
-) -> str:
-    """Map a skill to its provenance label.
-
-    ``agent`` and ``hub`` win over ``bundled`` since the same name could be
-    re-installed via hub or rewritten by the curator — that newer signal is
-    what the user cares about. ``external``/``plugin`` skills live outside
-    ``$HERMES_HOME/skills`` and bypass the three local manifests entirely.
-    """
-    if source != "local":
-        return source
-    if name in agent_created:
-        return "agent"
-    if name in hub:
-        return "hub"
-    if name in bundled:
-        return "bundled"
-    return "manual"
+# ---------------------------------------------------------------------------
+# Public surface
+# ---------------------------------------------------------------------------
 
 
 def list_skills() -> Dict[str, Any]:
-    """Enumerate all skills visible to Hermes Agent."""
-    config = _read_config()
-    platform_label = _resolve_platform_label()
-    disabled = _disabled_set(config, platform_label)
+    """Enumerate all skills visible to Hermes Agent.
 
+    Output shape (per skill):
+      - ``name`` / ``description`` / ``category`` — upstream-aligned
+      - ``enabled`` (boolean) — upstream ``/api/skills`` ``enabled`` field;
+        true when the skill is platform-compatible AND not in the disabled set
+      - ``path`` (string) — absolute path to ``SKILL.md`` (used by the
+        options page's per-skill file viewer; upstream doesn't expose this)
+      - ``origin`` — ``bundled``/``hub``/``agent``/``manual``/``external``
+      - ``platforms`` / ``version`` / ``tags`` / ``created_at`` /
+        ``updated_at`` / ``timestamp_source`` — supplementary metadata
+    """
+    disabled = _load_disabled_skill_names()
     bundled_names = _load_bundled_names()
     hub_records = _load_hub_records()
     usage_records = _load_usage_records()
-
     hub_names = set(hub_records.keys())
     agent_names = {
         name
@@ -381,36 +340,34 @@ def list_skills() -> Dict[str, Any]:
     }
 
     local_root = hermes_home() / "skills"
-    scan_roots: List[Tuple[Path, str]] = [(local_root, "local")]
-    for ext_dir in _external_skills_dirs(config):
-        scan_roots.append((ext_dir, "external"))
+    scan_roots: List[Tuple[Path, bool]] = [(local_root, False)]
+    for ext_dir in _external_skills_dirs():
+        scan_roots.append((ext_dir, True))
 
     skills: List[Dict[str, Any]] = []
     seen_names: Set[str] = set()
 
-    for root, source in scan_roots:
+    for root, is_external in scan_roots:
         for skill_md in _iter_skill_md(root):
+            if any(part in EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                continue
             try:
-                head = skill_md.read_text(encoding="utf-8")[:MAX_FRONTMATTER_BYTES]
+                head = skill_md.read_text(encoding="utf-8")[:4096]
             except (OSError, UnicodeDecodeError) as exc:
                 logger.debug("skip %s: %s", skill_md, exc)
                 continue
 
             fm, body = _parse_frontmatter(head)
+            if not _matches_platform(fm):
+                continue
+
             name = str(fm.get("name") or skill_md.parent.name).strip()
             if not name or name in seen_names:
                 continue
             seen_names.add(name)
 
-            description = _extract_description(fm, body)
-            tags = _extract_tags(fm)
-            category = _category_from_path(skill_md, root)
-            compatible = _skill_matches_current_os(fm)
-            is_disabled = name in disabled
-            active = compatible and not is_disabled
-
             origin = _classify_origin(
-                name, source, bundled_names, hub_names, agent_names
+                name, is_external, bundled_names, hub_names, agent_names
             )
             created_at, updated_at, ts_source = _resolve_timestamps(
                 name, skill_md, usage_records, hub_records
@@ -419,17 +376,16 @@ def list_skills() -> Dict[str, Any]:
             skills.append(
                 {
                     "name": name,
-                    "description": description,
-                    "category": category,
-                    "tags": tags,
+                    "description": _extract_description(fm, body),
+                    "category": _category_from_path(skill_md, root),
+                    "enabled": name not in disabled,
                     "path": str(skill_md),
-                    "source": source,
                     "origin": origin,
-                    "platforms": fm.get("platforms") if isinstance(fm.get("platforms"), list) else None,
-                    "compatible": compatible,
-                    "disabled": is_disabled,
-                    "active": active,
+                    "platforms": fm.get("platforms")
+                    if isinstance(fm.get("platforms"), list)
+                    else None,
                     "version": str(fm.get("version") or "").strip() or None,
+                    "tags": _extract_tags(fm),
                     "created_at": created_at,
                     "updated_at": updated_at,
                     "timestamp_source": ts_source,
@@ -439,24 +395,18 @@ def list_skills() -> Dict[str, Any]:
     skills.sort(key=lambda s: ((s.get("category") or "~"), s["name"].lower()))
 
     total = len(skills)
-    active_count = sum(1 for s in skills if s["active"])
-    disabled_count = sum(1 for s in skills if s["disabled"])
-    incompatible_count = sum(1 for s in skills if not s["compatible"])
-
+    enabled_count = sum(1 for s in skills if s["enabled"])
     origin_counts: Dict[str, int] = {}
     for s in skills:
         origin_counts[s["origin"]] = origin_counts.get(s["origin"], 0) + 1
 
     return {
         "skills": skills,
-        "platform": platform_label,
-        "sys_platform": sys.platform,
         "skills_dirs": [str(p) for p, _ in scan_roots],
         "totals": {
             "total": total,
-            "active": active_count,
-            "disabled": disabled_count,
-            "incompatible": incompatible_count,
+            "enabled": enabled_count,
+            "disabled": total - enabled_count,
         },
         "origin_counts": origin_counts,
     }
@@ -466,9 +416,41 @@ def list_skills_response() -> Dict[str, Any]:
     return {"ok": True, **list_skills()}
 
 
+def toggle_skill(name: str, enabled: bool) -> Dict[str, Any]:
+    """Persist a skill's enabled state by mutating ``approvals.skills.disabled``.
+
+    Routes the actual write through the upstream
+    ``hermes_cli.skills_config.save_disabled_skills`` helper, which is the
+    same path the dashboard's ``PUT /api/skills/toggle`` uses. We accept a
+    plain ``enabled`` boolean to match the symmetry of GET ``/hermes/skills``
+    (which carries ``enabled``); upstream's body shape is the same.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return {"ok": False, "error": "name is required"}
+    name = name.strip()
+    try:
+        from hermes_cli.skills_config import (  # type: ignore
+            get_disabled_skills,
+            save_disabled_skills,
+        )
+
+        config = _load_config()
+        disabled = set(get_disabled_skills(config))
+        if enabled:
+            disabled.discard(name)
+        else:
+            disabled.add(name)
+        save_disabled_skills(config, disabled)
+        return {"ok": True, "name": name, "enabled": enabled}
+    except Exception as exc:
+        logger.exception("toggle_skill failed for %s", name)
+        return {"ok": False, "error": f"toggle failed: {exc}"}
+
+
 # ---------------------------------------------------------------------------
 # Skill directory browsing — used by the options page "view files" affordance.
-# Read-only: we never mutate the skill tree from the bridge.
+# Read-only: we never mutate the skill tree from the bridge. Upstream
+# (`/api/skills`) has no equivalent so the logic stays here.
 # ---------------------------------------------------------------------------
 
 # Cap file enumeration so a stray symlink loop or an enormous external dir
@@ -562,9 +544,6 @@ def list_skill_files(name: str) -> Dict[str, Any]:
         if truncated:
             break
 
-    # Files come back in walk order (dir-by-dir, alphabetical within each).
-    # Sort once more on the relative path so callers see a stable global
-    # ordering regardless of fs walk quirks.
     files.sort(key=lambda f: f["path"])
     return {
         "ok": True,
@@ -576,7 +555,6 @@ def list_skill_files(name: str) -> Dict[str, Any]:
 
 
 def _is_probably_binary(sample: bytes) -> bool:
-    """Quick heuristic: presence of a NUL byte in the first chunk."""
     return b"\x00" in sample
 
 
@@ -641,9 +619,6 @@ def read_skill_file(name: str, rel_path: str) -> Dict[str, Any]:
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        # Sniff one more encoding before giving up — Hermes skills are
-        # almost always utf-8 but the occasional Windows-authored README
-        # ships as latin-1; surfacing those readably is cheap.
         try:
             text = raw.decode("latin-1")
         except UnicodeDecodeError:

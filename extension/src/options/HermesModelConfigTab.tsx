@@ -26,8 +26,9 @@ import {
   saveHermesMainProviderSettings,
   setHermesAgentMainModel,
   setHermesAuxiliarySlot,
-  type AuxiliarySlot,
+  type AuxiliaryModelsResponse,
   type AuxiliarySlotName,
+  type AuxiliaryTask,
   type HermesCatalogModelEntry,
   type HermesModelCatalogResponse,
 } from "~lib/hermes-agent-model";
@@ -36,9 +37,37 @@ import { cn } from "~lib/utils";
 /** Sidebar selection: special "model-config" panel or a provider slug. */
 type SidebarSection = "model-config" | string;
 
+/**
+ * Format a context-length token count for display: ``200K``, ``1M``,
+ * ``128K``. Returns empty string when the count is missing or zero —
+ * callers use that as the "hide the chip" signal.
+ */
+function formatContextLength(n: number): string {
+  if (!n || n <= 0) return "";
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `${m % 1 === 0 ? m.toFixed(0) : m.toFixed(1)}M`;
+  }
+  if (n >= 1000) {
+    return `${Math.round(n / 1000)}K`;
+  }
+  return String(n);
+}
+
+/** Build a name-indexed view of the upstream `tasks` array for render code. */
+function tasksToMap(
+  resp: AuxiliaryModelsResponse,
+): Record<AuxiliarySlotName, AuxiliaryTask> | null {
+  const arr = resp.tasks;
+  if (!arr || arr.length === 0) return null;
+  const map: Partial<Record<AuxiliarySlotName, AuxiliaryTask>> = {};
+  for (const t of arr) map[t.task] = t;
+  return map as Record<AuxiliarySlotName, AuxiliaryTask>;
+}
+
 function formatScalarForMeta(v: unknown): string {
   if (v === null || v === undefined) return "";
-  if (typeof v === "boolean") return v ? "是" : "否";
+  if (typeof v === "boolean") return v ? "yes" : "no";
   if (typeof v === "number") {
     if (!Number.isFinite(v)) return "";
     if (Number.isInteger(v)) return String(v);
@@ -47,25 +76,25 @@ function formatScalarForMeta(v: unknown): string {
   }
   if (typeof v === "string") return v.trim();
   if (Array.isArray(v))
-    return v.map(formatScalarForMeta).filter(Boolean).join("、");
+    return v.map(formatScalarForMeta).filter(Boolean).join(", ");
   return "";
 }
 
 function labelMetaKey(k: string): string {
   const m: Record<string, string> = {
-    context_window: "上下文",
-    max_context_tokens: "上下文上限",
-    max_output_tokens: "输出上限",
+    context_window: "Context",
+    max_context_tokens: "Context cap",
+    max_output_tokens: "Output cap",
     max_tokens: "tokens",
-    input_price_per_mtok: "输入",
-    output_price_per_mtok: "输出",
-    input_price: "输入价",
-    output_price: "输出价",
-    pricing: "定价",
-    pricing_tier: "定价档",
-    modality: "模态",
-    modalities: "模态",
-    parameters: "参数",
+    input_price_per_mtok: "Input",
+    output_price_per_mtok: "Output",
+    input_price: "Input price",
+    output_price: "Output price",
+    pricing: "Pricing",
+    pricing_tier: "Pricing tier",
+    modality: "Modality",
+    modalities: "Modality",
+    parameters: "Parameters",
   };
   return m[k] ?? k.replace(/_/g, " ");
 }
@@ -121,7 +150,7 @@ function ModelEntryMetadataLine({
     <div className="mt-1 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] leading-snug text-muted-foreground">
       {pairs.map(([k, v]) => {
         if (k === "input_price_per_mtok" || k === "output_price_per_mtok") {
-          const label = k === "input_price_per_mtok" ? "输入" : "输出";
+          const label = k === "input_price_per_mtok" ? "Input" : "Output";
           return (
             <span key={k} title={k}>
               <span className="font-medium text-foreground/65">{label}</span>
@@ -158,9 +187,34 @@ export function HermesModelConfigTab() {
   const [diskProvider, setDiskProvider] = useState("auto");
   const [diskModel, setDiskModel] = useState("");
   const [diskBaseUrl, setDiskBaseUrl] = useState("");
+  /**
+   * Resolved context-length triple (auto / config-override / effective)
+   * + model capability flags from ``agent.models_dev``. Comes back on
+   * the same ``/hermes/main-provider-settings`` response — kept in
+   * its own state so the "Default model" card can render context +
+   * capability chips alongside the model name without prop-drilling
+   * the whole HermesAgentMainModelResponse through nested panels.
+   */
+  const [mainContext, setMainContext] = useState<{
+    auto: number;
+    config: number;
+    effective: number;
+  }>({ auto: 0, config: 0, effective: 0 });
+  const [mainCapabilities, setMainCapabilities] = useState<{
+    supports_tools?: boolean;
+    supports_vision?: boolean;
+    supports_reasoning?: boolean;
+    context_window?: number | null;
+    max_output_tokens?: number | null;
+    model_family?: string | null;
+  }>({});
 
   // ── Auxiliary-model state (8 named slots) ────────────────────────────
-  const [auxSlots, setAuxSlots] = useState<Record<AuxiliarySlotName, AuxiliarySlot> | null>(null);
+  // Bridge returns ``tasks: AuxiliaryTask[]`` matching upstream
+  // `/api/model/auxiliary`. We index it by `task` name locally for fast
+  // lookup in the per-slot render code — this is a *local view* of the
+  // upstream-aligned response, not a wire-shape compat shim.
+  const [auxSlots, setAuxSlots] = useState<Record<AuxiliarySlotName, AuxiliaryTask> | null>(null);
   const [auxError, setAuxError] = useState<string | null>(null);
   const [auxSavingSlot, setAuxSavingSlot] = useState<AuxiliarySlotName | null>(null);
   const [auxSavedSlot, setAuxSavedSlot] = useState<AuxiliarySlotName | null>(null);
@@ -245,12 +299,12 @@ export function HermesModelConfigTab() {
   }, [catalog?.config_provider_ids, catalog?.env_ready_provider_ids]);
 
   function providerOptionLabel(id: string): string {
-    if (id === "auto") return "根据已填密钥自动选择服务商";
-    if (id === "custom") return "自定义兼容接口，填写下方 API 地址";
+    if (id === "auto") return "Auto-pick provider based on configured keys";
+    if (id === "custom") return "Custom OpenAI-compatible endpoint (set the API URL below)";
     const tui = canonicalLabelBySlug.get(id);
     if (tui) return tui;
-    if (configSlugSet.has(id)) return `${id}（已在你的 Hermes 配置中）`;
-    if (envReadySlugSet.has(id)) return `${id}（插件 .env 已填密钥）`;
+    if (configSlugSet.has(id)) return `${id} (already in your Hermes config)`;
+    if (envReadySlugSet.has(id)) return `${id} (key set in plugin .env)`;
     return id;
   }
 
@@ -372,7 +426,7 @@ export function HermesModelConfigTab() {
       if (cancelled) return;
       setKeysLoading(false);
       if (!r.ok) {
-        setKeysError(r.error || "无法读取密钥");
+        setKeysError(r.error || "Failed to read keys");
         setCredentialKeys([]);
         setKeyDrafts({});
         return;
@@ -408,6 +462,12 @@ export function HermesModelConfigTab() {
           setDiskModel(dm);
           setDiskBaseUrl(bu);
           setHBaseUrl(bu);
+          setMainContext({
+            auto: main.auto_context_length ?? 0,
+            config: main.config_context_length ?? 0,
+            effective: main.effective_context_length ?? 0,
+          });
+          setMainCapabilities(main.capabilities ?? {});
           setMainError(typeof main.error === "string" && main.error ? main.error : null);
           const c = main.credentials;
           if (c && (c.keys?.length ?? 0) > 0) {
@@ -416,10 +476,10 @@ export function HermesModelConfigTab() {
             skipNextCredentialsFetch.current = true;
           }
         } else {
-          setMainError(main.error || "无法读取 Hermes 配置");
+          setMainError(main.error || "Failed to read Hermes config");
         }
-        if (auxResp.ok && auxResp.slots) {
-          setAuxSlots(auxResp.slots);
+        if (auxResp.ok) {
+          setAuxSlots(tasksToMap(auxResp));
         } else {
           setAuxError(auxResp.error || null);
         }
@@ -475,7 +535,7 @@ export function HermesModelConfigTab() {
       }
       const r = await saveHermesMainProviderSettings(body);
       if (!r.ok) {
-        setHError(r.error || "保存失败");
+        setHError(r.error || "Save failed");
         return;
       }
       void loadProviderModels(true);
@@ -485,6 +545,12 @@ export function HermesModelConfigTab() {
       setDiskProvider(dp);
       setDiskModel(dm);
       setDiskBaseUrl(dbu);
+      setMainContext({
+        auto: r.auto_context_length ?? 0,
+        config: r.config_context_length ?? 0,
+        effective: r.effective_context_length ?? 0,
+      });
+      setMainCapabilities(r.capabilities ?? {});
       setHSaved(true);
       setTimeout(() => setHSaved(false), 1500);
     } finally {
@@ -520,7 +586,7 @@ export function HermesModelConfigTab() {
         base_url: null,
       });
       if (!r.ok) {
-        setMcError(r.error || "未能设为默认模型");
+        setMcError(r.error || "Failed to set default model");
         return;
       }
       const dp = (r.provider || p || "auto").trim() || "auto";
@@ -529,6 +595,12 @@ export function HermesModelConfigTab() {
       setDiskProvider(dp);
       setDiskModel(dm);
       setDiskBaseUrl(dbu);
+      setMainContext({
+        auto: r.auto_context_length ?? 0,
+        config: r.config_context_length ?? 0,
+        effective: r.effective_context_length ?? 0,
+      });
+      setMainCapabilities(r.capabilities ?? {});
       setHProvider(dp);
       setHModel(dm);
       setHBaseUrl(dbu);
@@ -540,33 +612,36 @@ export function HermesModelConfigTab() {
   }
 
   // ── Model Config: set / clear auxiliary slot ──────────────────────────
-  async function setAuxSlot(slot: AuxiliarySlotName, provider: string, model: string) {
-    setAuxSavingSlot(slot);
+  // Upstream `/api/model/set` uses `task` (not `slot`) as the slot id.
+  async function setAuxSlot(task: AuxiliarySlotName, provider: string, model: string) {
+    setAuxSavingSlot(task);
     setAuxError(null);
     try {
-      const r = await setHermesAuxiliarySlot({ slot, provider: provider.trim(), model: model.trim() });
+      const r = await setHermesAuxiliarySlot({ task, provider: provider.trim(), model: model.trim() });
       if (!r.ok) {
-        setAuxError(r.error || "保存失败");
+        setAuxError(r.error || "Save failed");
         return;
       }
-      if (r.slots) setAuxSlots(r.slots);
-      setAuxSavedSlot(slot);
+      const next = tasksToMap(r);
+      if (next) setAuxSlots(next);
+      setAuxSavedSlot(task);
       setTimeout(() => setAuxSavedSlot(null), 1500);
     } finally {
       setAuxSavingSlot(null);
     }
   }
 
-  async function clearAuxSlot(slot: AuxiliarySlotName) {
-    setAuxSavingSlot(slot);
+  async function clearAuxSlot(task: AuxiliarySlotName) {
+    setAuxSavingSlot(task);
     setAuxError(null);
     try {
-      const r = await setHermesAuxiliarySlot({ slot, provider: "", model: "" });
+      const r = await setHermesAuxiliarySlot({ task, provider: "", model: "" });
       if (!r.ok) {
-        setAuxError(r.error || "清除失败");
+        setAuxError(r.error || "Clear failed");
         return;
       }
-      if (r.slots) setAuxSlots(r.slots);
+      const next = tasksToMap(r);
+      if (next) setAuxSlots(next);
     } finally {
       setAuxSavingSlot(null);
     }
@@ -582,12 +657,12 @@ export function HermesModelConfigTab() {
           <h2 className="text-sm font-semibold tracking-tight text-foreground">Models</h2>
           <p className="truncate text-[11px] text-muted-foreground">
             {catalogLoading
-              ? "加载中…"
+              ? "Loading…"
               : catalog?.ok
                 ? catalog.updated_at
-                  ? `目录 ${catalog.updated_at}`
-                  : "目录已就绪"
-                : "目录不可用"}
+                  ? `Catalog ${catalog.updated_at}`
+                  : "Catalog ready"
+                : "Catalog unavailable"}
           </p>
         </div>
         <Button
@@ -603,13 +678,13 @@ export function HermesModelConfigTab() {
           ) : (
             <RefreshCw className="h-3.5 w-3.5" />
           )}
-          刷新目录
+          Refresh catalog
         </Button>
       </header>
 
       {mainLoading ? (
         <div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground">
-          加载设置中…
+          Loading settings…
         </div>
       ) : (
         <div className="flex min-h-0 flex-1">
@@ -628,11 +703,11 @@ export function HermesModelConfigTab() {
               )}
               onClick={() => setSection("model-config")}
             >
-              <span className="text-[11px] font-semibold">模型配置</span>
+              <span className="text-[11px] font-semibold">Model config</span>
               <span className="line-clamp-1 text-left text-[10px] leading-snug text-muted-foreground">
                 {diskModel
-                  ? `默认: ${diskModel}`
-                  : "设置默认及辅助模型"}
+                  ? `Default: ${diskModel}`
+                  : "Set default and auxiliary models"}
               </span>
             </Button>
 
@@ -640,7 +715,7 @@ export function HermesModelConfigTab() {
             <ScrollArea className="min-h-0 flex-1">
               <nav className="flex flex-col">
                 <p className="px-3 pt-2 pb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-                  服务商
+                  Providers
                 </p>
                 {orderedSidebarProviders.map((slug) => {
                   const active = section === slug;
@@ -664,12 +739,12 @@ export function HermesModelConfigTab() {
                         <span className="font-mono text-[11px]">{slug}</span>
                         {isDisk ? (
                           <Badge variant="default" className="h-4 px-1 text-[9px] leading-none">
-                            默认
+                            Default
                           </Badge>
                         ) : null}
                         {showConfiguredBadge ? (
                           <Badge variant="outline" className="h-4 px-1 text-[9px] leading-none">
-                            已配置
+                            Configured
                           </Badge>
                         ) : null}
                       </span>
@@ -690,6 +765,8 @@ export function HermesModelConfigTab() {
                 catalog={catalog}
                 diskProvider={diskProvider}
                 diskModel={diskModel}
+                mainContext={mainContext}
+                mainCapabilities={mainCapabilities}
                 auxSlots={auxSlots}
                 auxError={auxError}
                 auxSavingSlot={auxSavingSlot}
@@ -735,6 +812,103 @@ export function HermesModelConfigTab() {
   );
 }
 
+/**
+ * Inline chip row under the "Default model" card. Surfaces:
+ *
+ *   - **Context-length chip**: shows `effective` formatted as ``200K``;
+ *     when the user has a ``model.context_length`` override in
+ *     ``config.yaml``, badges it as "override" + tooltips the
+ *     auto-detected value so they can see what they're overriding.
+ *   - **Capability chips**: one per supported feature (vision /
+ *     reasoning / tools). Absent fields (model unknown to
+ *     ``models.dev``) just don't render — better than showing greyed-out
+ *     "Unknown" boxes that imply the feature is missing.
+ *   - **Model family**: small muted label at the end when known.
+ *
+ * All fields are best-effort: missing data hides the chip entirely so
+ * the card stays clean for models without metadata coverage.
+ */
+function MainModelChips({
+  context,
+  capabilities,
+}: {
+  context: { auto: number; config: number; effective: number };
+  capabilities: ModelConfigPanelProps["mainCapabilities"];
+}) {
+  const ctxLabel = formatContextLength(context.effective);
+  const hasOverride = context.config > 0;
+  const hasContext = ctxLabel.length > 0;
+  const family = capabilities.model_family?.trim();
+  const caps: Array<{ key: string; label: string; tooltip: string }> = [];
+  if (capabilities.supports_vision)
+    caps.push({
+      key: "vision",
+      label: "Vision",
+      tooltip: "Supports image input (per models.dev)",
+    });
+  if (capabilities.supports_reasoning)
+    caps.push({
+      key: "reasoning",
+      label: "Reasoning",
+      tooltip: "Supports reasoning tokens (o1 / extended-thinking models)",
+    });
+  if (capabilities.supports_tools)
+    caps.push({
+      key: "tools",
+      label: "Tools",
+      tooltip: "Supports OpenAI-style function calling",
+    });
+  if (capabilities.max_output_tokens && capabilities.max_output_tokens > 0) {
+    caps.push({
+      key: "max_out",
+      label: `Output ${formatContextLength(capabilities.max_output_tokens)}`,
+      tooltip: `Maximum output of ${capabilities.max_output_tokens} tokens per call`,
+    });
+  }
+  if (!hasContext && caps.length === 0 && !family) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      {hasContext && (
+        <span
+          title={
+            hasOverride
+              ? `config.yaml override: ${context.config.toLocaleString()}\nAuto-detected: ${
+                  context.auto > 0 ? context.auto.toLocaleString() : "unknown"
+                }`
+              : `Auto-detected (agent.model_metadata)`
+          }
+          className={cn(
+            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+            hasOverride
+              ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+              : "border-border bg-background text-muted-foreground",
+          )}
+        >
+          {hasOverride ? "Context (override)" : "Context"}
+          <span className="tabular-nums text-foreground/80">{ctxLabel}</span>
+        </span>
+      )}
+      {caps.map((c) => (
+        <span
+          key={c.key}
+          title={c.tooltip}
+          className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+        >
+          {c.label}
+        </span>
+      ))}
+      {family && (
+        <span
+          title="Model family per models.dev"
+          className="inline-flex items-center rounded-full border border-border/60 bg-muted/30 px-2 py-0.5 text-[10px] text-muted-foreground/80"
+        >
+          {family}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Model Config Panel
 // ─────────────────────────────────────────────────────────────────────────────
@@ -743,7 +917,24 @@ interface ModelConfigPanelProps {
   catalog: HermesModelCatalogResponse | null;
   diskProvider: string;
   diskModel: string;
-  auxSlots: Record<AuxiliarySlotName, AuxiliarySlot> | null;
+  /**
+   * Context-length triple from the bridge (mirrors upstream
+   * ``/api/model/info``). ``auto`` is what
+   * ``agent.model_metadata.get_model_context_length`` resolved; ``config``
+   * is the user's ``model.context_length`` override from ``config.yaml``;
+   * ``effective`` is what the agent will actually use. All-zero means
+   * the model is unknown to models.dev — UI just hides the chip.
+   */
+  mainContext: { auto: number; config: number; effective: number };
+  mainCapabilities: {
+    supports_tools?: boolean;
+    supports_vision?: boolean;
+    supports_reasoning?: boolean;
+    context_window?: number | null;
+    max_output_tokens?: number | null;
+    model_family?: string | null;
+  };
+  auxSlots: Record<AuxiliarySlotName, AuxiliaryTask> | null;
   auxError: string | null;
   auxSavingSlot: AuxiliarySlotName | null;
   auxSavedSlot: AuxiliarySlotName | null;
@@ -761,6 +952,8 @@ function ModelConfigPanel({
   catalog,
   diskProvider,
   diskModel,
+  mainContext,
+  mainCapabilities,
   auxSlots,
   auxError,
   auxSavingSlot,
@@ -780,7 +973,7 @@ function ModelConfigPanel({
   const saving = mcSaving || auxSavingSlot !== null;
 
   function providerLabel(slug: string): string {
-    if (!slug || slug === "auto") return "自动";
+    if (!slug || slug === "auto") return "Auto";
     const tui = canonicalLabelBySlug.get(slug);
     return tui ? tui : slug;
   }
@@ -818,20 +1011,24 @@ function ModelConfigPanel({
       <section className="space-y-2">
         <div className="flex items-center gap-2">
           <Star className="h-4 w-4 text-amber-500" />
-          <h3 className="text-sm font-semibold text-foreground">默认模型</h3>
+          <h3 className="text-sm font-semibold text-foreground">Default model</h3>
           {mcSaved && (
-            <span className="text-[11px] text-[hsl(var(--success))]">已保存</span>
+            <span className="text-[11px] text-[hsl(var(--success))]">Saved</span>
           )}
         </div>
         {diskModel ? (
           <div className="rounded-lg border border-border bg-muted/20 px-4 py-3">
             <p className="break-all font-mono text-sm text-foreground">{diskModel}</p>
             <p className="mt-0.5 text-[11px] text-muted-foreground">{providerLabel(diskProvider)}</p>
+            <MainModelChips
+              context={mainContext}
+              capabilities={mainCapabilities}
+            />
           </div>
         ) : (
           <div className="rounded-lg border border-dashed border-border/80 bg-muted/10 px-4 py-3">
             <p className="text-xs text-muted-foreground">
-              未设置 — 从下方模型列表点击 <Star className="inline h-3 w-3" /> 选择。
+              Not set — pick one from the model list below by clicking <Star className="inline h-3 w-3" />.
             </p>
           </div>
         )}
@@ -850,16 +1047,16 @@ function ModelConfigPanel({
             <ChevronRight className="h-4 w-4 text-muted-foreground" />
           )}
           <Zap className="h-4 w-4 text-blue-500" />
-          <span className="text-sm font-semibold text-foreground">辅助模型</span>
+          <span className="text-sm font-semibold text-foreground">Auxiliary models</span>
           <span className="text-[11px] text-muted-foreground">
-            ({configuredAuxCount} / {AUXILIARY_SLOT_NAMES.length} 已配置)
+            ({configuredAuxCount} / {AUXILIARY_SLOT_NAMES.length} configured)
           </span>
         </button>
 
         {auxExpanded && (
           <div className="space-y-2 pl-6">
             {auxSlots === null ? (
-              <p className="text-xs text-muted-foreground">辅助模型配置不可用（桥接未连接）。</p>
+              <p className="text-xs text-muted-foreground">Auxiliary model configuration unavailable (bridge not connected).</p>
             ) : (
               AUXILIARY_SLOT_NAMES.map((slot) => (
                 <AuxSlotRow
@@ -883,16 +1080,16 @@ function ModelConfigPanel({
       {/* ── All models list ── */}
       <section className="space-y-3 border-t border-border pt-4">
         <div>
-          <h3 className="text-sm font-semibold text-foreground">所有可用模型</h3>
+          <h3 className="text-sm font-semibold text-foreground">All available models</h3>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
-            来自已配置服务商；点击 <Star className="inline h-3 w-3 text-amber-500" /> 设为默认模型。
+            From configured providers; click <Star className="inline h-3 w-3 text-amber-500" /> to set as default.
           </p>
         </div>
 
         {!hasAny ? (
           <div className="rounded-lg border border-dashed border-border/80 bg-muted/15 p-4">
             <p className="text-xs text-muted-foreground">
-              暂无可用模型。请确认桥接已连接，或点击顶部「刷新目录」。
+              No models available. Make sure the bridge is connected, or click “Refresh catalog” at the top.
             </p>
           </div>
         ) : (
@@ -900,11 +1097,11 @@ function ModelConfigPanel({
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索模型名称或服务商…"
+              placeholder="Search model id or provider…"
               className="text-xs"
             />
             {groupedModels.size === 0 ? (
-              <p className="text-xs text-muted-foreground">未找到匹配模型。</p>
+              <p className="text-xs text-muted-foreground">No matching models.</p>
             ) : (
               <div className="space-y-4">
                 {[...groupedModels.entries()].map(([provider, models]) => (
@@ -920,7 +1117,7 @@ function ModelConfigPanel({
                           variant="outline"
                           className="ml-1.5 h-3.5 px-1 text-[9px] leading-none"
                         >
-                          已配置
+                          Configured
                         </Badge>
                       ) : null}
                     </p>
@@ -949,7 +1146,7 @@ function ModelConfigPanel({
                                 <ModelEntryMetadataLine meta={entry.metadata} />
                                 {isDefault && (
                                   <p className="mt-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                                    当前默认
+                                    Current default
                                   </p>
                                 )}
                               </div>
@@ -964,8 +1161,8 @@ function ModelConfigPanel({
                                     : "text-muted-foreground/50 hover:bg-amber-100/50 hover:text-amber-500 dark:hover:bg-amber-900/20",
                                 )}
                                 disabled={saving}
-                                title="设为默认模型"
-                                aria-label="设为默认模型"
+                                title="Set as default model"
+                                aria-label="Set as default model"
                                 onClick={() => void onSetDefault(provider, entry.id)}
                               >
                                 <Star className="h-3.5 w-3.5" />
@@ -992,7 +1189,7 @@ function ModelConfigPanel({
 
 interface AuxSlotRowProps {
   slot: AuxiliarySlotName;
-  slotData: AuxiliarySlot;
+  slotData: AuxiliaryTask;
   isSaving: boolean;
   isSaved: boolean;
   allCatalogModels: { provider: string; entry: HermesCatalogModelEntry }[];
@@ -1053,12 +1250,12 @@ function AuxSlotRow({
               {slotData.model}
             </p>
           ) : (
-            <p className="text-[10px] text-muted-foreground">继承主模型</p>
+            <p className="text-[10px] text-muted-foreground">Inherits main model</p>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {isSaved && (
-            <span className="text-[10px] text-[hsl(var(--success))]">已保存</span>
+            <span className="text-[10px] text-[hsl(var(--success))]">Saved</span>
           )}
           {hasModel && (
             <Button
@@ -1067,7 +1264,7 @@ function AuxSlotRow({
               size="icon"
               className="h-6 w-6 rounded-full text-muted-foreground/60 hover:text-destructive"
               disabled={disabled || isSaving}
-              title="清除"
+              title="Clear"
               onClick={onClear}
             >
               {isSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
@@ -1082,7 +1279,7 @@ function AuxSlotRow({
               disabled={disabled || isSaving}
               onClick={() => setOpen((v) => !v)}
             >
-              {isSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : "选择"}
+              {isSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : "Select"}
             </Button>
             {open && (
               <div className="absolute right-0 top-7 z-50 w-72 rounded-lg border border-border bg-popover shadow-lg">
@@ -1091,13 +1288,13 @@ function AuxSlotRow({
                     autoFocus
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="搜索模型…"
+                    placeholder="Search models…"
                     className="h-7 text-xs"
                   />
                 </div>
                 <ScrollArea className="max-h-56">
                   {filteredModels.length === 0 ? (
-                    <p className="px-3 py-2 text-xs text-muted-foreground">无匹配模型</p>
+                    <p className="px-3 py-2 text-xs text-muted-foreground">No matching models</p>
                   ) : (
                     <ul className="flex flex-col py-1">
                       {filteredModels.map(({ provider, entry }) => (
@@ -1188,7 +1385,7 @@ function ProviderPanel({
       )}
       {catalog?.ok && catalog.canonical_loaded === false && (
         <p className="text-[11px] text-amber-600 dark:text-amber-500">
-          部分服务商信息未加载完整，请确认 Hermes 已安装并与扩展保持连接。
+          Provider metadata partially loaded. Make sure Hermes is installed and connected to the extension.
         </p>
       )}
       {(() => {
@@ -1198,8 +1395,8 @@ function ProviderPanel({
         if (merged.length === 0) return null;
         return (
           <p className="text-[11px] text-muted-foreground">
-            已识别为可用的服务商（<span className="font-mono">config.yaml</span> 声明或插件{" "}
-            <span className="font-mono">.env</span> 已填密钥）：{merged.join("、")}
+            Recognized providers (declared in <span className="font-mono">config.yaml</span> or with a key set in the plugin{" "}
+            <span className="font-mono">.env</span>): {merged.join(", ")}
           </p>
         );
       })()}
@@ -1210,7 +1407,7 @@ function ProviderPanel({
       {/* Provider config section */}
       <section className="space-y-5">
         <div>
-          <h3 className="text-sm font-medium text-foreground">服务商配置</h3>
+          <h3 className="text-sm font-medium text-foreground">Provider config</h3>
           <div className="mt-2 space-y-1 text-sm text-muted-foreground">
             <p className="font-mono text-sm text-foreground">{hProvider}</p>
             <p className="text-xs">{providerOptionLabel(hProvider)}</p>
@@ -1220,21 +1417,21 @@ function ProviderPanel({
           {(hProvider === "auto" || hProvider === "custom") && (
             <p className="text-xs text-muted-foreground">
               {hProvider === "auto"
-                ? "选择具体服务商后可填写密钥并查看完整模型列表。"
-                : "填写 API 地址与密钥后即可使用自定义接口。"}
+                ? "Pick a specific provider to enter its key and see its full model list."
+                : "Set the API URL and key to use the custom endpoint."}
             </p>
           )}
 
           {hProvider !== "auto" && credentialKeys.length > 0 && (
             <div className="space-y-3">
-              <Label className="text-sm text-foreground">API 密钥</Label>
+              <Label className="text-sm text-foreground">API keys</Label>
               {keysError && (
                 <p className="text-[11px] text-amber-600 dark:text-amber-500">{keysError}</p>
               )}
               {keysLoading ? (
                 <p className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  加载中…
+                  Loading…
                 </p>
               ) : (
                 <div className="space-y-3">
@@ -1262,22 +1459,22 @@ function ProviderPanel({
           )}
 
           <div className="space-y-1.5">
-            <Label htmlFor="h-baseurl-main">API 地址（可选）</Label>
+            <Label htmlFor="h-baseurl-main">API URL (optional)</Label>
             <Input
               id="h-baseurl-main"
               value={hBaseUrl}
               onChange={(e) => onHBaseUrlChange(e.target.value)}
-              placeholder="兼容 OpenAI 的服务根地址"
+              placeholder="OpenAI-compatible service base URL"
               className="font-mono text-xs"
               autoComplete="off"
             />
           </div>
           <div className="flex flex-wrap items-center gap-2 pt-1">
             <Button type="button" disabled={hSaving} onClick={onSave}>
-              {hSaving ? "保存中…" : "保存设置"}
+              {hSaving ? "Saving…" : "Save settings"}
             </Button>
             {hSaved && (
-              <span className="text-xs text-[hsl(var(--success))]">已保存</span>
+              <span className="text-xs text-[hsl(var(--success))]">Saved</span>
             )}
           </div>
         </div>
@@ -1287,16 +1484,16 @@ function ProviderPanel({
       {hProvider !== "auto" && (
         <section className="space-y-3 border-t border-border pt-8">
           <div>
-            <h3 className="text-sm font-medium text-foreground">模型列表</h3>
+            <h3 className="text-sm font-medium text-foreground">Models</h3>
             <p className="mt-1 text-xs text-muted-foreground">
-              当前服务商可用模型；前往「模型配置」可将模型设为默认或辅助。
+              Models available for the current provider. Use the “Model config” section to set a default or auxiliary model.
             </p>
           </div>
           <div className="space-y-3">
             {showHermesModelLoading ? (
               <p className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                加载模型列表…
+                Loading models…
               </p>
             ) : modelEntriesForProvider.length > 0 ? (
               <>
@@ -1319,30 +1516,30 @@ function ProviderPanel({
                 </div>
                 {!showHermesModelLoading && providerCliMeta?.source === "manifest" ? (
                   <p className="text-[10px] text-muted-foreground">
-                    当前为参考列表；填写密钥并刷新后通常会显示完整列表。
+                    Reference list shown. Add a key and refresh to fetch the full list.
                   </p>
                 ) : null}
                 {!showHermesModelLoading && providerCliMeta?.pricing_loaded ? (
                   <p className="text-[10px] text-muted-foreground">
-                    价格为当前服务商模型接口列出的美元/百万 token（由每 token 单价换算）；不同路由或模型 id 可能与官网标价不一致，以账单为准。
+                    Prices are USD per million tokens, converted from the per-token rate returned by the provider's model API. Different routes or model ids may not match the published rate card — trust your actual bill.
                   </p>
                 ) : null}
               </>
             ) : (
               <div className="space-y-3 rounded-lg border border-dashed border-border/80 bg-muted/15 p-4">
                 <p className="text-xs text-muted-foreground">
-                  暂无列表。填写密钥后点顶部「刷新目录」，或在「模型配置」手动输入模型名称。
+                  No models yet. After entering a key, click “Refresh catalog” at the top, or type a model name manually in “Model config”.
                 </p>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
                   <div className="min-w-0 flex-1 space-y-1.5">
                     <Label htmlFor="h-model-fallback" className="text-xs">
-                      模型名称
+                      Model name
                     </Label>
                     <Input
                       id="h-model-fallback"
                       value={hModel}
                       onChange={(e) => onHModelChange(e.target.value)}
-                      placeholder="例如 gpt-4o"
+                      placeholder="e.g. gpt-4o"
                       className="font-mono text-xs"
                       autoComplete="off"
                     />

@@ -1,6 +1,7 @@
 import {
   Bot,
   BrainCircuit,
+  Clock,
   Code2,
   FilePlus2,
   Globe,
@@ -25,6 +26,7 @@ import { HermesLogo } from "~components/hermes-logo";
 import { Input } from "~components/ui/input";
 import { Label } from "~components/ui/label";
 import { ScrollArea } from "~components/ui/scroll-area";
+import { Separator } from "~components/ui/separator";
 
 import { useResolvedTheme } from "~lib/theme";
 import type { UserScript } from "~lib/types";
@@ -33,6 +35,7 @@ import { HermesModelConfigTab } from "./HermesModelConfigTab";
 import { ScriptEditor } from "./ScriptEditor";
 import { ScriptList } from "./ScriptList";
 import { OPTIONS_SHELL_HEADER_ROW } from "./optionsPageChrome";
+import { SettingsCron } from "./SettingsCron";
 import { SettingsGateway } from "./SettingsGateway";
 import { SettingsMemory } from "./SettingsMemory";
 import { SettingsPreferences } from "./SettingsPreferences";
@@ -49,14 +52,23 @@ interface DetailResp {
   error?: string;
 }
 
-/** Sidebar order: Preference → Scripts → Gateway → Models → Memory → Skills */
+/**
+ * Sidebar order (two groups):
+ *   Extension:  Preference → Userscripts
+ *   Hermes:     Gateway → Models → Skills → Memory → Cron
+ *
+ * Within the Hermes group, items go static → dynamic: Gateway (connection),
+ * Models (which LLM), Skills (capabilities), Memory (state), Cron (scheduled
+ * actions on top of all of the above).
+ */
 const OPTIONS_MAIN_TABS = [
   "preference",
   "scripts",
   "gateway",
   "models",
-  "memory",
   "skills",
+  "memory",
+  "cron",
 ] as const;
 type MainTab = (typeof OPTIONS_MAIN_TABS)[number];
 
@@ -209,7 +221,7 @@ export default function Options() {
             <p className="truncate text-sm font-semibold leading-tight">
               Hermes
             </p>
-            <p className="text-[10px] text-muted-foreground">扩展控制台</p>
+            <p className="text-[10px] text-muted-foreground">Extension console</p>
           </div>
         </div>
         <ScrollArea className="min-h-0 flex-1">
@@ -232,6 +244,7 @@ export default function Options() {
               <Code2 className="h-4 w-4 shrink-0 opacity-70" />
               Userscripts
             </Button>
+            <Separator className="my-1.5" />
             <Button
               type="button"
               variant={mainTab === "gateway" ? "secondary" : "ghost"}
@@ -252,6 +265,15 @@ export default function Options() {
             </Button>
             <Button
               type="button"
+              variant={mainTab === "skills" ? "secondary" : "ghost"}
+              className="w-full justify-start gap-2 font-normal"
+              onClick={() => onMainTabChange("skills")}
+            >
+              <Sparkles className="h-4 w-4 shrink-0 opacity-70" />
+              Skills
+            </Button>
+            <Button
+              type="button"
               variant={mainTab === "memory" ? "secondary" : "ghost"}
               className="w-full justify-start gap-2 font-normal"
               onClick={() => onMainTabChange("memory")}
@@ -261,12 +283,12 @@ export default function Options() {
             </Button>
             <Button
               type="button"
-              variant={mainTab === "skills" ? "secondary" : "ghost"}
+              variant={mainTab === "cron" ? "secondary" : "ghost"}
               className="w-full justify-start gap-2 font-normal"
-              onClick={() => onMainTabChange("skills")}
+              onClick={() => onMainTabChange("cron")}
             >
-              <Sparkles className="h-4 w-4 shrink-0 opacity-70" />
-              Skills
+              <Clock className="h-4 w-4 shrink-0 opacity-70" />
+              Cron
             </Button>
           </nav>
         </ScrollArea>
@@ -282,6 +304,8 @@ export default function Options() {
           <SettingsMemory />
         ) : mainTab === "skills" ? (
           <SettingsSkills />
+        ) : mainTab === "cron" ? (
+          <SettingsCron />
         ) : (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {mainTab === "scripts" ? (
@@ -294,7 +318,7 @@ export default function Options() {
                       Userscripts
                     </h2>
                     <p className="truncate text-[11px] text-muted-foreground">
-                      创建、安装与管理用户脚本
+                      Create, install, and manage userscripts
                     </p>
                   </div>
                 </header>
@@ -374,7 +398,7 @@ export default function Options() {
                       Preference
                     </h2>
                     <p className="truncate text-[11px] text-muted-foreground">
-                      扩展界面与行为（与 Gateway / Models 无关）
+                      Extension UI and behavior (unrelated to Gateway / Models)
                     </p>
                   </div>
                 </header>
@@ -395,9 +419,9 @@ export default function Options() {
                     </h2>
                     <p
                       className="truncate text-[11px] text-muted-foreground"
-                      title="侧边栏对话 → hermes-agent-gateway（OpenAI 兼容 HTTP）"
+                      title="Side panel chat → hermes-agent-gateway (OpenAI-compatible HTTP)"
                     >
-                      侧边栏对话 → hermes-agent-gateway
+                      Side panel chat → hermes-agent-gateway
                     </p>
                   </div>
                 </header>

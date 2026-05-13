@@ -29,11 +29,14 @@ def read_auxiliary_models_response() -> Dict[str, Any]:
 
 
 def write_auxiliary_models_response(payload: Dict[str, Any]) -> Dict[str, Any]:
-    slot = payload.get("slot")
-    if not isinstance(slot, str) or slot.strip() not in AUXILIARY_SLOTS:
-        raise ValueError(f"slot must be one of: {AUXILIARY_SLOTS}")
+    # Upstream `/api/model/set` uses `task` as the field name for the
+    # auxiliary slot — see `hermes_cli/web_server.py`'s ModelAssignment
+    # payload. We align to that exact name; no `slot` alias.
+    task = payload.get("task")
+    if not isinstance(task, str) or task.strip() not in AUXILIARY_SLOTS:
+        raise ValueError(f"task must be one of: {AUXILIARY_SLOTS}")
     merged = write_auxiliary_slot(
-        slot.strip(),
+        task.strip(),
         provider=payload.get("provider"),
         model=payload.get("model"),
         base_url=payload.get("base_url"),

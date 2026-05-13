@@ -11,13 +11,27 @@ import { ATTACHMENT_HTTP_BASE } from "../background/config";
 
 export type HermesMemoryTarget = "memory" | "user";
 
+/**
+ * One memory entry plus the upstream safety scanner's verdict.
+ * `flagged` is `null` for clean entries and a short classification
+ * string (e.g. `"prompt_injection"`, `"exfil_curl"`, `"ssh_backdoor"`)
+ * for entries Hermes itself would refuse to inject into a prompt —
+ * comes from ``tools/memory_tool._scan_memory_content``.
+ */
+export interface HermesMemoryEntry {
+  text: string;
+  flagged: string | null;
+}
+
 export interface HermesMemoryEntries {
   ok: boolean;
   target: HermesMemoryTarget;
   path: string;
-  entries: string[];
+  entries: HermesMemoryEntry[];
   char_count: number;
   char_limit: number;
+  /** Number of `entries` with a non-null `flagged` classification. */
+  flagged_count: number;
   error?: string;
 }
 
@@ -49,6 +63,7 @@ function emptyEntries(target: HermesMemoryTarget, error: string): HermesMemoryEn
     entries: [],
     char_count: 0,
     char_limit: 0,
+    flagged_count: 0,
     error,
   };
 }
@@ -84,6 +99,7 @@ export async function getHermesMemoryTarget(
       entries: data.entries ?? [],
       char_count: data.char_count ?? 0,
       char_limit: data.char_limit ?? 0,
+      flagged_count: data.flagged_count ?? 0,
     };
   } catch (e) {
     return emptyEntries(target, String((e as Error)?.message || e));

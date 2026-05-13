@@ -11,7 +11,12 @@
  * and see identical event streams.
  */
 
-import { abortStream, clearRuntime, startStream } from "./engine";
+import {
+  abortStream,
+  clearPendingApproval,
+  clearRuntime,
+  startStream,
+} from "./engine";
 import { getState } from "./state";
 import {
   CHAT_PORT_NAME,
@@ -94,6 +99,9 @@ export function registerChatPort(): void {
           break;
         case "clear":
           clearRuntime(raw.sessionId);
+          break;
+        case "clearApproval":
+          clearPendingApproval(raw.sessionId, raw.approvalId);
           break;
       }
     });

@@ -10,6 +10,21 @@ import {
   ATTACHMENT_HTTP_BASE,
 } from "../background/config";
 
+/**
+ * Capability flags resolved from ``agent.models_dev.get_model_capabilities``
+ * (the same source upstream ``/api/model/info`` uses). All fields are
+ * optional because models.dev may not have the model — absence means
+ * "unknown", not "unsupported".
+ */
+export interface HermesModelCapabilities {
+  supports_tools?: boolean;
+  supports_vision?: boolean;
+  supports_reasoning?: boolean;
+  context_window?: number | null;
+  max_output_tokens?: number | null;
+  model_family?: string | null;
+}
+
 export interface HermesAgentMainModelResponse {
   ok: boolean;
   config_path?: string;
@@ -17,6 +32,17 @@ export interface HermesAgentMainModelResponse {
   provider?: string;
   model?: string;
   base_url?: string | null;
+  /**
+   * Auto-detected context length via ``agent.model_metadata`` —
+   * independent of any ``model.context_length`` override in
+   * ``config.yaml``. ``0`` when unknown.
+   */
+  auto_context_length?: number;
+  /** ``model.context_length`` override from ``config.yaml`` (``0`` if unset). */
+  config_context_length?: number;
+  /** ``config_context_length`` when > 0, else ``auto_context_length``. */
+  effective_context_length?: number;
+  capabilities?: HermesModelCapabilities;
   error?: string;
 }
 
@@ -244,21 +270,34 @@ export const AUXILIARY_SLOT_NAMES = [
 export type AuxiliarySlotName = (typeof AUXILIARY_SLOT_NAMES)[number];
 
 export const AUXILIARY_SLOT_LABELS: Record<AuxiliarySlotName, string> = {
-  vision: "图像理解 (Vision)",
-  web_extract: "网页提取 (Web Extract)",
-  compression: "上下文压缩 (Compression)",
-  session_search: "会话搜索 (Session Search)",
-  skills_hub: "技能中心 (Skills Hub)",
-  approval: "审批 (Approval)",
+  vision: "Vision",
+  web_extract: "Web Extract",
+  compression: "Compression",
+  session_search: "Session Search",
+  skills_hub: "Skills Hub",
+  approval: "Approval",
   mcp: "MCP",
-  title_generation: "标题生成 (Title Generation)",
+  title_generation: "Title Generation",
 };
 
-export interface AuxiliarySlot {
+/**
+ * One row in the auxiliary-task list. ``task`` matches upstream's slot
+ * id; the other fields mirror upstream ``/api/model/auxiliary`` exactly
+ * except for ``api_key`` (bridge-only — Hermes upstream stores aux keys
+ * in env files, ours lives next to the slot config so the panel can
+ * carry them through ``<plugin-root>/.env``).
+ */
+export interface AuxiliaryTask {
+  task: AuxiliarySlotName;
   provider: string;
   model: string;
   base_url: string;
   api_key: string;
+}
+
+export interface AuxiliaryMainModelSummary {
+  provider: string;
+  model: string;
 }
 
 export interface AuxiliaryModelsResponse {
@@ -266,7 +305,13 @@ export interface AuxiliaryModelsResponse {
   error?: string;
   config_path?: string;
   config_exists?: boolean;
-  slots?: Record<AuxiliarySlotName, AuxiliarySlot>;
+  /**
+   * Each auxiliary task slot in display order. Matches upstream
+   * ``GET /api/model/auxiliary``'s ``tasks`` array.
+   */
+  tasks?: AuxiliaryTask[];
+  /** Main model summary, so callers can render aux + main side-by-side. */
+  main?: AuxiliaryMainModelSummary;
 }
 
 export async function getHermesAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
@@ -287,7 +332,7 @@ export async function getHermesAuxiliaryModels(): Promise<AuxiliaryModelsRespons
 }
 
 export async function setHermesAuxiliarySlot(patch: {
-  slot: AuxiliarySlotName;
+  task: AuxiliarySlotName;
   provider?: string;
   model?: string;
   base_url?: string;

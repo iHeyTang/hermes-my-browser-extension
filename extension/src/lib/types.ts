@@ -197,13 +197,4 @@ export interface ChatMessage {
   name?: string;
   /** Local-only id for React keying. */
   uiId?: string;
-  /**
-   * Image data URLs to splice onto this message as OpenAI multimodal
-   * `image_url` content parts. Send-time only — never persisted into a
-   * session's message log (that would balloon `chrome.storage.local`).
-   * The chat client serialises `content` as the multimodal array form
-   * when this is present and non-empty; otherwise the plain string
-   * shape is used so we keep wire-compat with text-only models.
-   */
-  imageDataUrls?: string[];
 }

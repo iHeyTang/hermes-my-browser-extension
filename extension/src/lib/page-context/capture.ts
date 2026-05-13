@@ -205,19 +205,21 @@ export async function capturePageContext(
 }
 
 /**
- * Format a `PageContext` as a system-prompt block. We use clearly-fenced
- * markers so the model can tell where the page content ends and the user's
- * actual question begins.
+ * Format a `PageContext` as a plain-text block for inlining into the user
+ * message content. We use clearly-fenced markers so the model can tell where
+ * the page content ends and the user's actual question begins.
  */
 export function formatPageContextForPrompt(ctx: PageContext): string {
   return formatPageContextsForPrompt([ctx]);
 }
 
 /**
- * Format multiple `PageContext`s as a single system-prompt message with
- * one `<page-context>` block per page. The intro paragraph is emitted once
- * at the top regardless of count so the prompt stays compact and the model
- * sees a uniform shape whether the user attached one page or many.
+ * Format multiple `PageContext`s as a single text block with one
+ * `<page-context>` block per page. The intro paragraph is emitted once at
+ * the top regardless of count so the prompt stays compact and the model
+ * sees a uniform shape whether the user attached one page or many. The
+ * caller is expected to inline the returned string into the user message
+ * content (no separate `system` role message).
  */
 export function formatPageContextsForPrompt(ctxs: PageContext[]): string {
   if (ctxs.length === 0) return "";

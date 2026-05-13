@@ -19,8 +19,8 @@ const TARGET_LABELS: Record<HermesMemoryTarget, string> = {
 
 const TARGET_DESCS: Record<HermesMemoryTarget, string> = {
   memory:
-    "Hermes Agent 的自身观察笔记（环境事实、项目约定、工具特性等）。",
-  user: "Hermes Agent 记录的用户偏好与协作习惯。",
+    "Hermes Agent's own observations (environment facts, project conventions, tool quirks, etc.).",
+  user: "User preferences and collaboration habits noted by Hermes Agent.",
 };
 
 function usageRatio(entry: HermesMemoryEntries): number {
@@ -55,7 +55,7 @@ function MemoryBlock({ entry }: { entry: HermesMemoryEntries }) {
             {entry.char_limit.toLocaleString()} chars
           </p>
           <p className="text-[10px] text-muted-foreground/70">
-            {entry.entries.length} 条
+            {entry.entries.length} entries
           </p>
         </div>
       </header>
@@ -79,21 +79,34 @@ function MemoryBlock({ entry }: { entry: HermesMemoryEntries }) {
       {entry.error ? (
         <p className="text-xs text-destructive">{entry.error}</p>
       ) : entry.entries.length === 0 ? (
-        <p className="text-xs text-muted-foreground">（暂无记忆条目）</p>
+        <p className="text-xs text-muted-foreground">(No memory entries yet)</p>
       ) : (
         <ol className="space-y-2">
-          {entry.entries.map((text, i) => (
+          {entry.entries.map((rec, i) => (
             <li
               key={i}
-              className="rounded border border-border/60 bg-muted/30 p-3 text-xs leading-relaxed"
+              className={cn(
+                "rounded border p-3 text-xs leading-relaxed",
+                rec.flagged
+                  ? "border-destructive/40 bg-destructive/[0.04]"
+                  : "border-border/60 bg-muted/30",
+              )}
             >
-              <div className="mb-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+              <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
                 <span className="rounded bg-muted px-1.5 py-0.5 tabular-nums">
                   #{i + 1}
                 </span>
-                <span className="tabular-nums">{text.length} chars</span>
+                <span className="tabular-nums">{rec.text.length} chars</span>
+                {rec.flagged && (
+                  <span
+                    title={`Hermes safety-scan flag: ${rec.flagged}\nThe same rules block entries before MEMORY.md is injected into the system prompt`}
+                    className="rounded bg-destructive/15 px-1.5 py-0.5 font-medium text-destructive"
+                  >
+                    ⚠ {rec.flagged}
+                  </span>
+                )}
               </div>
-              <p className="whitespace-pre-wrap break-words">{text}</p>
+              <p className="whitespace-pre-wrap break-words">{rec.text}</p>
             </li>
           ))}
         </ol>
@@ -114,7 +127,7 @@ export function SettingsMemory() {
     const r = await getHermesMemoryList();
     setLoading(false);
     if (!r.ok) {
-      setError(r.error || "加载失败");
+      setError(r.error || "Failed to load");
       setItems([]);
       return;
     }
@@ -138,7 +151,7 @@ export function SettingsMemory() {
             className="truncate text-[11px] text-muted-foreground"
             title="$HERMES_HOME/memories/{MEMORY,USER}.md"
           >
-            Hermes Agent 的持久化记忆（只读浏览）
+            Hermes Agent's persistent memory (read-only view)
           </p>
         </div>
         <Button
@@ -154,7 +167,7 @@ export function SettingsMemory() {
           ) : (
             <RefreshCw className="h-3.5 w-3.5" />
           )}
-          刷新
+          Refresh
         </Button>
       </header>
 

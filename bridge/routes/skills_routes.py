@@ -6,8 +6,9 @@ from ..services.skills_service import (
     list_skill_files,
     list_skills_response,
     read_skill_file,
+    toggle_skill,
 )
-from .common import json_error
+from .common import json_error, read_json_object
 
 
 async def handle_skills_list(_request: web.Request) -> web.Response:
@@ -46,6 +47,32 @@ async def handle_skill_file(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
+async def handle_skill_toggle(request: web.Request) -> web.Response:
+    """POST /hermes/skills/toggle — body ``{name, enabled}``.
+
+    Mirrors upstream ``PUT /api/skills/toggle`` in semantics; we expose it
+    as POST to keep our HTTP verb conventions consistent across the
+    ``/hermes/*`` surface.
+    """
+    try:
+        body = await read_json_object(request)
+    except web.HTTPBadRequest as exc:
+        return exc
+    name = body.get("name")
+    enabled = body.get("enabled")
+    if not isinstance(name, str) or not name.strip():
+        return json_error(400, "name is required")
+    if not isinstance(enabled, bool):
+        return json_error(400, "enabled must be a boolean")
+    try:
+        payload = toggle_skill(name, enabled)
+    except OSError as exc:
+        return json_error(500, str(exc))
+    if not payload.get("ok"):
+        return web.json_response(payload, status=400)
+    return web.json_response(payload)
+
+
 def register_skills_routes(app: web.Application) -> None:
     # `name` is URL-encoded by the client; aiohttp's `{name}` matcher already
     # decodes percent-escapes for us. Skill names with slashes don't exist
@@ -56,5 +83,6 @@ def register_skills_routes(app: web.Application) -> None:
             web.get("/hermes/skills", handle_skills_list),
             web.get("/hermes/skills/{name}/files", handle_skill_files),
             web.get("/hermes/skills/{name}/file", handle_skill_file),
+            web.post("/hermes/skills/toggle", handle_skill_toggle),
         ]
     )

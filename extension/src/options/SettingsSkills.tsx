@@ -16,6 +16,7 @@ import {
   getHermesSkillFile,
   getHermesSkillFiles,
   getHermesSkills,
+  postHermesSkillToggle,
   type HermesSkillEntry,
   type HermesSkillFileEntry,
   type HermesSkillFileResponse,
@@ -28,7 +29,7 @@ import { OPTIONS_SHELL_HEADER_ROW } from "./optionsPageChrome";
 
 const ALL_KEY = "__all__";
 const UNCATEGORIZED_KEY = "__uncategorized__";
-const UNCATEGORIZED_LABEL = "未分类";
+const UNCATEGORIZED_LABEL = "Uncategorized";
 
 interface OriginInfo {
   label: string;
@@ -38,30 +39,30 @@ interface OriginInfo {
 
 const ORIGIN_INFO: Record<string, OriginInfo> = {
   bundled: {
-    label: "内置",
-    tooltip: "随 Hermes Agent 一起分发（.bundled_manifest）",
+    label: "Bundled",
+    tooltip: "Shipped with Hermes Agent (.bundled_manifest)",
     className: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
   },
   hub: {
-    label: "Hub 安装",
-    tooltip: "通过 hermes skill install 从 Skills Hub 在线安装（.hub/lock.json）",
+    label: "Hub",
+    tooltip: "Installed from Skills Hub via `hermes skill install` (.hub/lock.json)",
     className: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
   },
   agent: {
-    label: "Agent 创建",
+    label: "Agent-authored",
     tooltip:
-      "curator agent 在 background-review 中自己写出来的（.usage.json: created_by=\"agent\"）",
+      "Written by the curator agent during background-review (.usage.json: created_by=\"agent\")",
     className: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
   },
   manual: {
-    label: "手动添加",
+    label: "Manual",
     tooltip:
-      "目录里有但三份 manifest 都不认（用户自行 clone、symlink、或第三方 CLI 装的）",
+      "Present on disk but absent from all three manifests (user clone, symlink, or third-party CLI install)",
     className: "bg-muted text-muted-foreground",
   },
   external: {
-    label: "外部目录",
-    tooltip: "来自 config.yaml 的 skills.external_dirs",
+    label: "External",
+    tooltip: "From `skills.external_dirs` in config.yaml",
     className: "bg-teal-500/15 text-teal-700 dark:text-teal-300",
   },
 };
@@ -84,49 +85,46 @@ const ORIGIN_FILTER_ORDER: HermesSkillOrigin[] = [
   "external",
 ];
 
-type ActiveBucket = "active" | "inactive";
+type EnabledBucket = "enabled" | "disabled";
 
-const ACTIVE_INFO: Record<
-  ActiveBucket,
+const ENABLED_INFO: Record<
+  EnabledBucket,
   { label: string; tooltip: string; className: string }
 > = {
-  active: {
-    label: "可用",
-    tooltip: "平台兼容且未被禁用",
+  enabled: {
+    label: "Enabled",
+    tooltip: "Loaded into the current agent",
     className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
   },
-  inactive: {
-    label: "不可用",
-    tooltip: "已禁用或平台不兼容",
+  disabled: {
+    label: "Disabled",
+    tooltip: "Listed in config.yaml/skills.disabled",
     className: "bg-muted text-muted-foreground",
   },
 };
 
-const ACTIVE_FILTER_ORDER: ActiveBucket[] = ["active", "inactive"];
+const ENABLED_FILTER_ORDER: EnabledBucket[] = ["enabled", "disabled"];
 
 interface CategoryBucket {
   key: string;
   label: string;
   count: number;
-  activeCount: number;
+  enabledCount: number;
 }
 
 function statusBadge(skill: HermesSkillEntry) {
-  if (!skill.compatible) {
+  // Upstream `/api/skills` doesn't surface platform incompatibility — those
+  // skills are filtered out server-side. So a row in the list is either
+  // enabled or explicitly disabled by the user; nothing else.
+  if (skill.enabled) {
     return {
-      label: "平台不兼容",
-      className: "bg-muted text-muted-foreground",
-    };
-  }
-  if (skill.disabled) {
-    return {
-      label: "已禁用",
-      className: "bg-destructive/15 text-destructive",
+      label: "Enabled",
+      className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
     };
   }
   return {
-    label: "可用",
-    className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+    label: "Disabled",
+    className: "bg-destructive/15 text-destructive",
   };
 }
 
@@ -135,12 +133,25 @@ function formatRelative(iso: string | null): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return "";
   const diffSec = Math.round((Date.now() - t) / 1000);
-  if (diffSec < 60) return "刚刚";
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
-  if (diffSec < 86400 * 30) return `${Math.floor(diffSec / 86400)} 天前`;
-  if (diffSec < 86400 * 365) return `${Math.floor(diffSec / (86400 * 30))} 个月前`;
-  return `${Math.floor(diffSec / (86400 * 365))} 年前`;
+  if (diffSec < 60) return "just now";
+  if (diffSec < 3600) {
+    const n = Math.floor(diffSec / 60);
+    return `${n} minute${n === 1 ? "" : "s"} ago`;
+  }
+  if (diffSec < 86400) {
+    const n = Math.floor(diffSec / 3600);
+    return `${n} hour${n === 1 ? "" : "s"} ago`;
+  }
+  if (diffSec < 86400 * 30) {
+    const n = Math.floor(diffSec / 86400);
+    return `${n} day${n === 1 ? "" : "s"} ago`;
+  }
+  if (diffSec < 86400 * 365) {
+    const n = Math.floor(diffSec / (86400 * 30));
+    return `${n} month${n === 1 ? "" : "s"} ago`;
+  }
+  const n = Math.floor(diffSec / (86400 * 365));
+  return `${n} year${n === 1 ? "" : "s"} ago`;
 }
 
 function formatAbsolute(iso: string | null): string {
@@ -151,21 +162,24 @@ function formatAbsolute(iso: string | null): string {
 }
 
 const TS_SOURCE_LABEL: Record<string, string> = {
-  usage: "Hermes 使用记录",
-  hub: "Hub 安装记录",
-  fs: "文件系统时间",
+  usage: "Hermes usage record",
+  hub: "Hub install record",
+  fs: "Filesystem time",
 };
 
 function SkillRow({
   skill,
   onView,
+  onToggle,
+  toggling,
 }: {
   skill: HermesSkillEntry;
   onView: (skill: HermesSkillEntry) => void;
+  onToggle: (skill: HermesSkillEntry, next: boolean) => void;
+  toggling: boolean;
 }) {
-  const badge = statusBadge(skill);
   const origin = originMeta(skill.origin);
-  const muted = !skill.active;
+  const muted = !skill.enabled;
 
   const updatedRel = formatRelative(skill.updated_at);
 
@@ -173,13 +187,18 @@ function SkillRow({
   if (skill.description) hoverParts.push(skill.description);
   if (skill.platforms?.length) hoverParts.push(`platforms: ${skill.platforms.join(", ")}`);
   if (skill.tags.length) hoverParts.push(`tags: ${skill.tags.join(", ")}`);
-  hoverParts.push(`添加: ${formatAbsolute(skill.created_at)}`);
-  hoverParts.push(`更新: ${formatAbsolute(skill.updated_at)}`);
+  hoverParts.push(`Added: ${formatAbsolute(skill.created_at)}`);
+  hoverParts.push(`Updated: ${formatAbsolute(skill.updated_at)}`);
   hoverParts.push(
-    `时间来源: ${TS_SOURCE_LABEL[skill.timestamp_source] ?? skill.timestamp_source}`,
+    `Source: ${TS_SOURCE_LABEL[skill.timestamp_source] ?? skill.timestamp_source}`,
   );
-  hoverParts.push("点击查看目录内容");
+  hoverParts.push("Click the row to browse files");
   const hoverTitle = hoverParts.join("\n");
+
+  const toggleLabel = skill.enabled ? "Enabled" : "Disabled";
+  const toggleTooltip = skill.enabled
+    ? "Click to disable: remove from config.yaml/skills.disabled"
+    : "Click to enable: write to config.yaml/skills.disabled";
 
   return (
     <li
@@ -220,7 +239,7 @@ function SkillRow({
           {updatedRel && (
             <span
               className="shrink-0 text-[10px] tabular-nums text-muted-foreground/70"
-              title={`更新于 ${formatAbsolute(skill.updated_at)}`}
+              title={`Updated ${formatAbsolute(skill.updated_at)}`}
             >
               {updatedRel}
             </span>
@@ -236,14 +255,27 @@ function SkillRow({
       >
         {origin.label}
       </span>
-      <span
+      <button
+        type="button"
+        title={toggleTooltip}
+        aria-pressed={skill.enabled}
+        disabled={toggling}
+        onClick={(e) => {
+          // Stop click from bubbling into the row's "open viewer" handler.
+          e.stopPropagation();
+          onToggle(skill, !skill.enabled);
+        }}
+        onKeyDown={(e) => e.stopPropagation()}
         className={cn(
-          "mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
-          badge.className,
+          "mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+          skill.enabled
+            ? "bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 dark:text-emerald-300"
+            : "bg-muted text-muted-foreground hover:bg-muted/80",
+          toggling && "cursor-wait opacity-50",
         )}
       >
-        {badge.label}
-      </span>
+        {toggleLabel}
+      </button>
     </li>
   );
 }
@@ -319,7 +351,7 @@ function SkillViewerDialog({ skill, onClose }: SkillViewerDialogProps) {
       if (cancelled) return;
       setLoadingList(false);
       if (!r.ok) {
-        setListError(r.error || "加载失败");
+        setListError(r.error || "Failed to load");
         return;
       }
       const sorted = sortSkillFiles(r.files);
@@ -351,7 +383,7 @@ function SkillViewerDialog({ skill, onClose }: SkillViewerDialogProps) {
       if (cancelled) return;
       setLoadingFile(false);
       if (!r.ok) {
-        setFileError(r.error || "读取失败");
+        setFileError(r.error || "Read failed");
         setFileBody(null);
         return;
       }
@@ -392,10 +424,10 @@ function SkillViewerDialog({ skill, onClose }: SkillViewerDialogProps) {
           {/* ── File list ── */}
           <aside className="flex min-h-0 w-64 shrink-0 flex-col border-r border-border bg-muted/15">
             <div className="border-b border-border/50 px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/70">
-              文件 ({files.length})
+              Files ({files.length})
               {truncated && (
                 <span className="ml-1 text-amber-600 dark:text-amber-400">
-                  · 仅显示前 {files.length} 个
+                  · showing first {files.length}
                 </span>
               )}
             </div>
@@ -403,13 +435,13 @@ function SkillViewerDialog({ skill, onClose }: SkillViewerDialogProps) {
               {loadingList ? (
                 <div className="flex items-center justify-center py-6 text-xs text-muted-foreground">
                   <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                  加载中…
+                  Loading…
                 </div>
               ) : listError ? (
                 <p className="px-3 py-3 text-xs text-destructive">{listError}</p>
               ) : files.length === 0 ? (
                 <p className="px-3 py-3 text-xs text-muted-foreground">
-                  （无文件）
+                  (no files)
                 </p>
               ) : (
                 <ul className="flex flex-col">
@@ -460,19 +492,19 @@ function SkillViewerDialog({ skill, onClose }: SkillViewerDialogProps) {
               {loadingFile ? (
                 <div className="flex items-center justify-center py-6 text-xs text-muted-foreground">
                   <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                  读取中…
+                  Reading…
                 </div>
               ) : fileError ? (
                 <p className="px-4 py-3 text-xs text-destructive">{fileError}</p>
               ) : fileBody?.encoding === "binary" ? (
                 <p className="px-4 py-3 text-xs text-muted-foreground">
-                  二进制文件 · {formatFileSize(fileBody.size ?? 0)}
+                  Binary file · {formatFileSize(fileBody.size ?? 0)}
                 </p>
               ) : fileBody?.encoding === "too-large" ? (
                 <p className="px-4 py-3 text-xs text-muted-foreground">
-                  文件过大（{formatFileSize(fileBody.size ?? 0)}），超过预览上限
-                  {fileBody.limit ? `（${formatFileSize(fileBody.limit)}）` : ""}
-                  。
+                  File too large ({formatFileSize(fileBody.size ?? 0)}) — exceeds preview limit
+                  {fileBody.limit ? ` (${formatFileSize(fileBody.limit)})` : ""}
+                  .
                 </p>
               ) : fileBody?.content != null ? (
                 <pre className="whitespace-pre-wrap break-words px-4 py-3 font-mono text-[11px] leading-relaxed">
@@ -480,7 +512,7 @@ function SkillViewerDialog({ skill, onClose }: SkillViewerDialogProps) {
                 </pre>
               ) : (
                 <p className="px-4 py-3 text-xs text-muted-foreground">
-                  （选择左侧文件以查看内容）
+                  (Select a file on the left to view its contents)
                 </p>
               )}
             </ScrollArea>
@@ -492,12 +524,12 @@ function SkillViewerDialog({ skill, onClose }: SkillViewerDialogProps) {
 }
 
 function buildCategoryBuckets(skills: HermesSkillEntry[]): CategoryBucket[] {
-  const map = new Map<string, { count: number; activeCount: number }>();
+  const map = new Map<string, { count: number; enabledCount: number }>();
   for (const s of skills) {
     const key = s.category ?? UNCATEGORIZED_KEY;
-    const cur = map.get(key) ?? { count: 0, activeCount: 0 };
+    const cur = map.get(key) ?? { count: 0, enabledCount: 0 };
     cur.count += 1;
-    if (s.active) cur.activeCount += 1;
+    if (s.enabled) cur.enabledCount += 1;
     map.set(key, cur);
   }
   const keys = Array.from(map.keys()).sort((a, b) => {
@@ -509,7 +541,7 @@ function buildCategoryBuckets(skills: HermesSkillEntry[]): CategoryBucket[] {
     key: k,
     label: k === UNCATEGORIZED_KEY ? UNCATEGORIZED_LABEL : k,
     count: map.get(k)!.count,
-    activeCount: map.get(k)!.activeCount,
+    enabledCount: map.get(k)!.enabledCount,
   }));
 }
 
@@ -519,7 +551,7 @@ const EMPTY_RESPONSE: HermesSkillsResponse = {
   platform: "",
   sys_platform: "",
   skills_dirs: [],
-  totals: { total: 0, active: 0, disabled: 0, incompatible: 0 },
+  totals: { total: 0, enabled: 0, disabled: 0 },
   origin_counts: {},
 };
 
@@ -533,12 +565,21 @@ export function SettingsSkills() {
   const [originFilter, setOriginFilter] = useState<Set<HermesSkillOrigin>>(
     () => new Set(),
   );
-  const [activeFilter, setActiveFilter] = useState<Set<ActiveBucket>>(
+  const [enabledFilter, setEnabledFilter] = useState<Set<EnabledBucket>>(
     () => new Set(),
   );
   const [viewingSkill, setViewingSkill] = useState<HermesSkillEntry | null>(
     null,
   );
+  /**
+   * Tracks which skills currently have an in-flight toggle POST. Per-row
+   * keys so simultaneous toggles on different rows each show their own
+   * pending state without blocking other rows.
+   */
+  const [togglingNames, setTogglingNames] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [toggleError, setToggleError] = useState<string | null>(null);
 
   const toggleOrigin = useCallback((o: HermesSkillOrigin) => {
     setOriginFilter((prev) => {
@@ -549,11 +590,11 @@ export function SettingsSkills() {
     });
   }, []);
 
-  const toggleActive = useCallback((a: ActiveBucket) => {
-    setActiveFilter((prev) => {
+  const toggleEnabled = useCallback((b: EnabledBucket) => {
+    setEnabledFilter((prev) => {
       const next = new Set(prev);
-      if (next.has(a)) next.delete(a);
-      else next.add(a);
+      if (next.has(b)) next.delete(b);
+      else next.add(b);
       return next;
     });
   }, []);
@@ -564,12 +605,67 @@ export function SettingsSkills() {
     const r = await getHermesSkills();
     setLoading(false);
     if (!r.ok) {
-      setError(r.error || "加载失败");
+      setError(r.error || "Failed to load");
       setData(EMPTY_RESPONSE);
       return;
     }
     setData(r);
   }, []);
+
+  /**
+   * Optimistic toggle: flip the `enabled` flag locally first, fire the
+   * POST, and revert if the server rejects. Errors surface in a small
+   * banner instead of a modal so the user can keep toggling other rows.
+   */
+  const handleToggle = useCallback(
+    async (skill: HermesSkillEntry, next: boolean) => {
+      const name = skill.name;
+      setToggleError(null);
+      setTogglingNames((prev) => {
+        const out = new Set(prev);
+        out.add(name);
+        return out;
+      });
+      // Optimistic update.
+      setData((prev) => ({
+        ...prev,
+        skills: prev.skills.map((s) =>
+          s.name === name ? { ...s, enabled: next } : s,
+        ),
+        totals: {
+          ...prev.totals,
+          enabled:
+            prev.totals.enabled + (next ? 1 : -1),
+          disabled:
+            prev.totals.disabled + (next ? -1 : 1),
+        },
+      }));
+      const r = await postHermesSkillToggle(name, next);
+      setTogglingNames((prev) => {
+        const out = new Set(prev);
+        out.delete(name);
+        return out;
+      });
+      if (!r.ok) {
+        // Revert.
+        setData((prev) => ({
+          ...prev,
+          skills: prev.skills.map((s) =>
+            s.name === name ? { ...s, enabled: !next } : s,
+          ),
+          totals: {
+            ...prev.totals,
+            enabled:
+              prev.totals.enabled + (next ? -1 : 1),
+            disabled:
+              prev.totals.disabled + (next ? 1 : -1),
+          },
+        }));
+        setToggleError(`${name}: ${r.error || "Toggle failed"}`);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     void refresh();
@@ -595,23 +691,23 @@ export function SettingsSkills() {
     return out;
   }, [categoryPool]);
 
-  const activeCounts = useMemo(() => {
-    let a = 0;
-    let i = 0;
+  const enabledCounts = useMemo(() => {
+    let on = 0;
+    let off = 0;
     for (const s of categoryPool) {
-      if (s.active) a += 1;
-      else i += 1;
+      if (s.enabled) on += 1;
+      else off += 1;
     }
-    return { active: a, inactive: i } as Record<ActiveBucket, number>;
+    return { enabled: on, disabled: off } as Record<EnabledBucket, number>;
   }, [categoryPool]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return categoryPool.filter((s) => {
       if (originFilter.size > 0 && !originFilter.has(s.origin)) return false;
-      if (activeFilter.size > 0) {
-        const bucket: ActiveBucket = s.active ? "active" : "inactive";
-        if (!activeFilter.has(bucket)) return false;
+      if (enabledFilter.size > 0) {
+        const bucket: EnabledBucket = s.enabled ? "enabled" : "disabled";
+        if (!enabledFilter.has(bucket)) return false;
       }
       if (!q) return true;
       if (s.name.toLowerCase().includes(q)) return true;
@@ -620,19 +716,19 @@ export function SettingsSkills() {
       if (s.tags.some((t) => t.toLowerCase().includes(q))) return true;
       return false;
     });
-  }, [categoryPool, query, originFilter, activeFilter]);
+  }, [categoryPool, query, originFilter, enabledFilter]);
 
   const visibleOrigins = useMemo(
     () => ORIGIN_FILTER_ORDER.filter((o) => (originCounts[o] ?? 0) > 0),
     [originCounts],
   );
 
-  const visibleActives = useMemo(
-    () => ACTIVE_FILTER_ORDER.filter((a) => activeCounts[a] > 0),
-    [activeCounts],
+  const visibleEnableds = useMemo(
+    () => ENABLED_FILTER_ORDER.filter((b) => enabledCounts[b] > 0),
+    [enabledCounts],
   );
 
-  const hasAnyChipFilter = originFilter.size + activeFilter.size > 0;
+  const hasAnyChipFilter = originFilter.size + enabledFilter.size > 0;
 
   const currentBucket = useMemo(
     () => buckets.find((b) => b.key === category),
@@ -652,7 +748,7 @@ export function SettingsSkills() {
             className="truncate text-[11px] text-muted-foreground"
             title={data.skills_dirs.join("\n") || "$HERMES_HOME/skills"}
           >
-            当前 Agent 可用技能（{data.totals.active} / {data.totals.total}）
+            Skills available to the current agent ({data.totals.enabled} / {data.totals.total})
             {data.platform && `  ·  platform=${data.platform}`}
           </p>
         </div>
@@ -669,7 +765,7 @@ export function SettingsSkills() {
           ) : (
             <RefreshCw className="h-3.5 w-3.5" />
           )}
-          刷新
+          Refresh
         </Button>
       </header>
 
@@ -683,9 +779,9 @@ export function SettingsSkills() {
           <div className="border-b border-border/50">
             <CategoryButton
               active={category === ALL_KEY}
-              label="全部"
+              label="All"
               count={data.totals.total}
-              activeCount={data.totals.active}
+              enabledCount={data.totals.enabled}
               onClick={() => setCategory(ALL_KEY)}
             />
           </div>
@@ -693,7 +789,7 @@ export function SettingsSkills() {
             <nav className="flex flex-col">
               {buckets.length > 0 && (
                 <p className="px-3 pt-2 pb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-                  分类
+                  Categories
                 </p>
               )}
               {buckets.map((b) => (
@@ -702,7 +798,7 @@ export function SettingsSkills() {
                   active={category === b.key}
                   label={b.label}
                   count={b.count}
-                  activeCount={b.activeCount}
+                  enabledCount={b.enabledCount}
                   onClick={() => setCategory(b.key)}
                 />
               ))}
@@ -714,17 +810,30 @@ export function SettingsSkills() {
         <ScrollArea className="min-h-0 min-w-0 flex-1">
           <div className="space-y-4 p-6">
             {error && <p className="text-xs text-destructive">{error}</p>}
+            {toggleError && (
+              <div className="flex items-start justify-between gap-2 rounded border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive">
+                <span className="min-w-0 flex-1 break-words">{toggleError}</span>
+                <button
+                  type="button"
+                  onClick={() => setToggleError(null)}
+                  className="shrink-0 rounded p-0.5 hover:bg-destructive/10"
+                  aria-label="Dismiss error"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            )}
 
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold tracking-tight">
                   {category === ALL_KEY
-                    ? "全部"
+                    ? "All"
                     : currentBucket?.label ?? category}
                 </h3>
                 <p className="text-[11px] text-muted-foreground">
-                  共 {currentBucket?.count ?? data.totals.total} 条 · 可用{" "}
-                  {currentBucket?.activeCount ?? data.totals.active}
+                  {currentBucket?.count ?? data.totals.total} total ·{" "}
+                  {currentBucket?.enabledCount ?? data.totals.enabled} enabled
                 </p>
               </div>
             </div>
@@ -734,7 +843,7 @@ export function SettingsSkills() {
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="按名称、描述、tag 或分类搜索…"
+                placeholder="Search by name, description, tag, or category…"
                 className="h-8 pl-7 pr-7 text-xs"
               />
               {query && (
@@ -742,24 +851,24 @@ export function SettingsSkills() {
                   type="button"
                   onClick={() => setQuery("")}
                   className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-                  aria-label="清除搜索"
+                  aria-label="Clear search"
                 >
                   <X className="h-3 w-3" />
                 </button>
               )}
             </div>
 
-            {(visibleActives.length > 0 || visibleOrigins.length > 0) && (
+            {(visibleEnableds.length > 0 || visibleOrigins.length > 0) && (
               <div className="flex flex-wrap items-center gap-1.5">
-                {visibleActives.map((a) => {
-                  const meta = ACTIVE_INFO[a];
-                  const on = activeFilter.has(a);
-                  const count = activeCounts[a];
+                {visibleEnableds.map((b) => {
+                  const meta = ENABLED_INFO[b];
+                  const on = enabledFilter.has(b);
+                  const count = enabledCounts[b];
                   return (
                     <button
-                      key={a}
+                      key={b}
                       type="button"
-                      onClick={() => toggleActive(a)}
+                      onClick={() => toggleEnabled(b)}
                       title={meta.tooltip}
                       className={cn(
                         "flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors",
@@ -773,7 +882,7 @@ export function SettingsSkills() {
                     </button>
                   );
                 })}
-                {visibleActives.length > 0 && visibleOrigins.length > 0 && (
+                {visibleEnableds.length > 0 && visibleOrigins.length > 0 && (
                   <span className="mx-0.5 text-muted-foreground/50">·</span>
                 )}
                 {visibleOrigins.map((o) => {
@@ -803,18 +912,18 @@ export function SettingsSkills() {
                     type="button"
                     onClick={() => {
                       setOriginFilter(new Set());
-                      setActiveFilter(new Set());
+                      setEnabledFilter(new Set());
                     }}
                     className="rounded-full px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
                   >
-                    清除
+                    Clear
                   </button>
                 )}
               </div>
             )}
 
             {filtered.length === 0 && !loading && !error ? (
-              <p className="text-xs text-muted-foreground">没有匹配的 skill。</p>
+              <p className="text-xs text-muted-foreground">No skills match the filter.</p>
             ) : (
               <ul className="overflow-hidden rounded-md border border-border/60">
                 {filtered.map((s) => (
@@ -822,6 +931,8 @@ export function SettingsSkills() {
                     key={`${s.category ?? ""}/${s.name}`}
                     skill={s}
                     onView={setViewingSkill}
+                    onToggle={handleToggle}
+                    toggling={togglingNames.has(s.name)}
                   />
                 ))}
               </ul>
@@ -841,13 +952,13 @@ function CategoryButton({
   active,
   label,
   count,
-  activeCount,
+  enabledCount,
   onClick,
 }: {
   active: boolean;
   label: string;
   count: number;
-  activeCount: number;
+  enabledCount: number;
   onClick: () => void;
 }) {
   return (
@@ -867,7 +978,7 @@ function CategoryButton({
       <Badge
         variant="outline"
         className="h-4 shrink-0 px-1 text-[9px] leading-none tabular-nums"
-        title={`可用 ${activeCount} / 总数 ${count}`}
+        title={`${enabledCount} enabled / ${count} total`}
       >
         {count}
       </Badge>
