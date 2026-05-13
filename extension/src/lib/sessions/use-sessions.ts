@@ -116,6 +116,32 @@ export function useSessions(): SessionsController {
   const openTabIdsRef = useRef(openTabIds);
   const activeIdRef = useRef(activeId);
   const messagesRef = useRef(activeMessages);
+
+  // Bumped on every session switch (activateOpen / createNew / remove path
+  // that flips the active session). Any async work scheduled against a prior
+  // epoch — debounced persists, the cross-surface `loadMessages(...).then(
+  // setActiveMessages)` in the onChanged listener — checks the epoch before
+  // writing, so a stale load can't clobber the post-switch messages.
+  const switchEpochRef = useRef(0);
+
+  // Self-write dedupe for the chrome.storage.onChanged activeId path.
+  // saveActiveId() inside this hook also fires onChanged here, and that
+  // re-entry races with React committing the same change locally — refs
+  // may be stale when it fires, leading to messagesRef being saved against
+  // the WRONG activeId. Mark our own writes synchronously *before* the
+  // chrome.storage write so the listener can swallow its own echo.
+  const selfWriteActiveIdRef = useRef<Map<string, number>>(new Map());
+  const markSelfWriteActiveId = (id: string) => {
+    const c = selfWriteActiveIdRef.current.get(id) ?? 0;
+    selfWriteActiveIdRef.current.set(id, c + 1);
+  };
+  const consumeSelfWriteActiveId = (id: string): boolean => {
+    const c = selfWriteActiveIdRef.current.get(id) ?? 0;
+    if (c <= 0) return false;
+    if (c === 1) selfWriteActiveIdRef.current.delete(id);
+    else selfWriteActiveIdRef.current.set(id, c - 1);
+    return true;
+  };
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
@@ -151,6 +177,7 @@ export function useSessions(): SessionsController {
 
       const effectiveActive = tabs.includes(aid) ? aid : tabs[0] ?? "";
       if (effectiveActive !== aid) {
+        markSelfWriteActiveId(effectiveActive);
         await saveActiveId(effectiveActive);
       }
 
@@ -189,9 +216,15 @@ export function useSessions(): SessionsController {
     }
     const id = activeId;
     const snapshot = activeMessages;
+    const epoch = switchEpochRef.current;
     persistTimer.current = setTimeout(() => {
-      void saveMessages(id, snapshot);
       persistTimer.current = null;
+      // A session switch happened while we were debounced — the (id,
+      // snapshot) pair captured at schedule time may no longer represent
+      // a coherent view of any session. flushCurrentMessages already saved
+      // the outgoing session synchronously, so dropping this is safe.
+      if (epoch !== switchEpochRef.current) return;
+      void saveMessages(id, snapshot);
     }, PERSIST_DEBOUNCE_MS) as unknown as number;
     return () => {
       if (persistTimer.current != null) {
@@ -221,13 +254,31 @@ export function useSessions(): SessionsController {
       }
       if (changes[SESSION_KEYS.activeId]) {
         const next = String(changes[SESSION_KEYS.activeId].newValue || "");
-        if (next !== activeIdRef.current) {
+        // Swallow echoes of this hook's own writes. activateOpen /
+        // createNew / remove all mark their own saveActiveId() call before
+        // the await; without this the listener races React state commits
+        // and can save messagesRef (already advanced to the new session's
+        // empty/loaded state) against the OLD activeId, wiping it.
+        if (consumeSelfWriteActiveId(next)) {
+          // Our own write — local state is the source of truth here.
+        } else if (next !== activeIdRef.current) {
           if (activeIdRef.current) {
             void saveMessages(activeIdRef.current, messagesRef.current);
           }
+          const epoch = ++switchEpochRef.current;
           setActiveId(next);
-          if (next) void loadMessages(next).then(setActiveMessages);
-          else setActiveMessages([]);
+          if (next) {
+            void loadMessages(next).then((msgs) => {
+              // Guard against a subsequent switch having moved on while we
+              // were loading — without this, the resolved snapshot would
+              // overwrite whatever the user has just typed/sent in the now-
+              // current session.
+              if (epoch !== switchEpochRef.current) return;
+              setActiveMessages(msgs);
+            });
+          } else {
+            setActiveMessages([]);
+          }
         }
       }
     };
@@ -242,7 +293,28 @@ export function useSessions(): SessionsController {
       clearTimeout(persistTimer.current);
       persistTimer.current = null;
     }
-    await saveMessages(id, messagesRef.current);
+    const snapshot = messagesRef.current;
+    await saveMessages(id, snapshot);
+    // The caller is about to switch activeId, which will trigger the persist
+    // effect's cleanup and cancel any pending debounced save for the
+    // outgoing session. If a port message (stream chunk, abort, snapshot)
+    // for the outgoing session arrived DURING our chrome.storage write, its
+    // setActiveMessages update has now landed in React state but won't
+    // survive the switch — drain pending tasks, then re-save so the latest
+    // state (e.g. handleStreamAborted's "[stopped]" tail) actually reaches
+    // storage. Yields via setTimeout(0) rather than queueMicrotask because
+    // chrome.runtime port messages are dispatched as tasks, not microtasks.
+    await new Promise<void>((r) => setTimeout(r, 0));
+    if (
+      activeIdRef.current === id &&
+      messagesRef.current !== snapshot
+    ) {
+      if (persistTimer.current != null) {
+        clearTimeout(persistTimer.current);
+        persistTimer.current = null;
+      }
+      await saveMessages(id, messagesRef.current);
+    }
   }, []);
 
   // Internal: switches active to id (must already be open) and loads its
@@ -251,16 +323,27 @@ export function useSessions(): SessionsController {
     async (id: string) => {
       if (!id) {
         await flushCurrentMessages();
+        switchEpochRef.current++;
         setActiveId("");
         setActiveMessages([]);
+        markSelfWriteActiveId("");
         await saveActiveId("");
         return;
       }
       if (id === activeIdRef.current) return;
       await flushCurrentMessages();
+      // Bump the epoch BEFORE the async load. Any debounced persist or
+      // pending cross-surface load tagged with a prior epoch will be
+      // dropped on resolution, so a slow loadMessages can't clobber the
+      // freshly-typed messages in the new session.
+      const myEpoch = ++switchEpochRef.current;
       const next = await loadMessages(id);
+      // Another switch raced ahead while we were loading — bail and let
+      // it win.
+      if (myEpoch !== switchEpochRef.current) return;
       setActiveId(id);
       setActiveMessages(next);
+      markSelfWriteActiveId(id);
       await saveActiveId(id);
     },
     [flushCurrentMessages],
@@ -348,10 +431,12 @@ export function useSessions(): SessionsController {
   const createNew = useCallback(async (): Promise<string> => {
     await flushCurrentMessages();
     const meta = newSessionMeta();
+    switchEpochRef.current++;
     setSessions((prev) => [meta, ...prev]);
     setOpenTabIds([...openTabIdsRef.current, meta.id]);
     setActiveId(meta.id);
     setActiveMessages([]);
+    markSelfWriteActiveId(meta.id);
     await saveActiveId(meta.id);
     return meta.id;
   }, [flushCurrentMessages]);
@@ -407,13 +492,17 @@ export function useSessions(): SessionsController {
           const replacement =
             remaining[i] ?? remaining[i - 1] ?? "";
           if (replacement) {
+            const myEpoch = ++switchEpochRef.current;
             const msgs = await loadMessages(replacement);
+            if (myEpoch !== switchEpochRef.current) return;
             setActiveId(replacement);
             setActiveMessages(msgs);
           } else {
+            switchEpochRef.current++;
             setActiveId("");
             setActiveMessages([]);
           }
+          markSelfWriteActiveId(replacement);
           await saveActiveId(replacement);
         }
       }
