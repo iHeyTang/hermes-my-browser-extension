@@ -575,11 +575,15 @@ def read_skill_file(name: str, rel_path: str) -> Dict[str, Any]:
         return {"ok": False, "error": "path is required"}
 
     candidate = (skill_dir / rel_path).resolve()
+    # Resolve once: skills are commonly installed as symlinks (e.g. lark-* →
+    # ~/.agents/skills/*), so `candidate` (already resolved) won't be
+    # relative to the unresolved `skill_dir`.
+    skill_root = skill_dir.resolve()
     try:
-        candidate.relative_to(skill_dir.resolve())
+        rel = candidate.relative_to(skill_root)
     except ValueError:
         return {"ok": False, "error": "path escapes skill directory"}
-    if any(part in EXCLUDED_SKILL_DIRS for part in candidate.relative_to(skill_dir).parts):
+    if any(part in EXCLUDED_SKILL_DIRS for part in rel.parts):
         return {"ok": False, "error": "path is inside an excluded directory"}
     if not candidate.is_file():
         return {"ok": False, "error": f"not a regular file: {rel_path}"}
