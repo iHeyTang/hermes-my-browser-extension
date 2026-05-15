@@ -1,3 +1,5 @@
+"""HTTP helpers shared across feature modules."""
+
 from __future__ import annotations
 
 import json
@@ -39,4 +41,3 @@ async def read_json_object(request: web.Request) -> Dict[str, Any]:
             content_type="application/json",
         )
     return payload
-

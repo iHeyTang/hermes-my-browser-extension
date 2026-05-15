@@ -2,7 +2,7 @@
  * Client for the bridge `/hermes/cron/*` routes.
  *
  * Thin wrapper around `cron.jobs` in Hermes Agent — see
- * `bridge/services/cron_service.py`. Field shape matches what
+ * `bridge/features/cron/service.py`. Field shape matches what
  * `cron.jobs.list_jobs(include_disabled=True)` returns; we don't translate
  * field names so the options page stays consistent with Hermes's own dump.
  */
@@ -37,7 +37,25 @@ export type HermesCronState =
   | "error"
   | string;
 
-export type HermesCronDeliver = "local" | "origin" | string;
+/**
+ * Cron delivery target.
+ *
+ * The new-tab feed is always populated — every cron run lands as a
+ * markdown file under ``$HERMES_HOME/cron/output/...`` regardless of
+ * this value (the bridge indexes those files; the new-tab page reads
+ * the index). This field only controls *additional* channel push on top
+ * of that:
+ *
+ *   - ``"local"``  — file-only (default). No channel push.
+ *   - ``"inbox"``  — legacy alias for ``"local"``; bridge normalises it.
+ *   - ``"origin"`` — also push back to the chat the job was created
+ *                    from (the job's origin platform+chat_id).
+ *   - any other string — passes through to Hermes core's parser, which
+ *                        accepts platform names (``"feishu"``), explicit
+ *                        targets (``"feishu:oc_xxx"``), ``"all"``, and
+ *                        comma-separated combinations.
+ */
+export type HermesCronDeliver = "inbox" | "local" | "origin" | string;
 
 export interface HermesCronOrigin {
   platform?: string;

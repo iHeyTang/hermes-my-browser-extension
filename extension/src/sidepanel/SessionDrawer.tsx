@@ -3,8 +3,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~components/ui/button";
 import { ScrollArea } from "~components/ui/scroll-area";
-import { cn } from "~lib/utils";
+import { useT, type TranslateFn } from "~lib/i18n";
 import type { SessionMeta } from "~lib/sessions/types";
+import { cn } from "~lib/utils";
 
 interface Props {
   open: boolean;
@@ -30,7 +31,7 @@ interface Group {
  * This month / Older. Mirrors the grouping the Hermes WebUI uses; gives the
  * sidebar a familiar structure even when there are dozens of sessions.
  */
-function groupSessions(sessions: SessionMeta[]): Group[] {
+function groupSessions(sessions: SessionMeta[], t: TranslateFn): Group[] {
   const now = new Date();
   const startOfDay = (d: Date) => {
     const x = new Date(d);
@@ -43,11 +44,11 @@ function groupSessions(sessions: SessionMeta[]): Group[] {
   const thirtyDays = today - 30 * 24 * 60 * 60 * 1000;
 
   const buckets: Group[] = [
-    { label: "Today", items: [] },
-    { label: "Yesterday", items: [] },
-    { label: "Earlier this week", items: [] },
-    { label: "This month", items: [] },
-    { label: "Older", items: [] },
+    { label: t("sidepanel.sessions.group.today"), items: [] },
+    { label: t("sidepanel.sessions.group.yesterday"), items: [] },
+    { label: t("sidepanel.sessions.group.earlierWeek"), items: [] },
+    { label: t("sidepanel.sessions.group.thisMonth"), items: [] },
+    { label: t("sidepanel.sessions.group.older"), items: [] },
   ];
 
   // Pinned items always come first regardless of date.
@@ -73,7 +74,8 @@ function groupSessions(sessions: SessionMeta[]): Group[] {
   }
 
   const out: Group[] = [];
-  if (pinned.length) out.push({ label: "Pinned", items: pinned });
+  if (pinned.length)
+    out.push({ label: t("sidepanel.sessions.group.pinned"), items: pinned });
   for (const b of buckets) if (b.items.length) out.push(b);
   return out;
 }
@@ -88,6 +90,7 @@ export function SessionDrawer({
   onRename,
   onDelete,
 }: Props) {
+  const { t } = useT();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
 
@@ -100,7 +103,7 @@ export function SessionDrawer({
     }
   }, [open]);
 
-  const groups = useMemo(() => groupSessions(sessions), [sessions]);
+  const groups = useMemo(() => groupSessions(sessions, t), [sessions, t]);
   const openSet = useMemo(() => new Set(openTabIds), [openTabIds]);
 
   if (!open) return null;
@@ -111,13 +114,20 @@ export function SessionDrawer({
     <div
       className="absolute inset-0 z-30 flex flex-col bg-background"
       role="dialog"
-      aria-label="Session history"
+      aria-label={t("sidepanel.sessions.dialogAria")}
     >
       <header className="flex items-center gap-2 border-b px-3 py-2">
-        <h2 className="text-sm font-semibold">History</h2>
+        <h2 className="text-sm font-semibold">
+          {t("sidepanel.sessions.title")}
+        </h2>
         <span className="text-xs text-muted-foreground">{visibleCount}</span>
         <div className="ml-auto">
-          <Button size="icon" variant="ghost" onClick={onClose} title="Close">
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={onClose}
+            title={t("sidepanel.sessions.close")}
+          >
             <X />
           </Button>
         </div>
@@ -128,7 +138,7 @@ export function SessionDrawer({
           <div className="p-2">
             {groups.length === 0 && (
               <div className="rounded-md border border-dashed p-6 text-center text-xs text-muted-foreground">
-                No sessions yet. Send a message to start one.
+                {t("sidepanel.sessions.empty")}
               </div>
             )}
             {groups.map((g) => (
@@ -155,8 +165,8 @@ export function SessionDrawer({
                         setEditingValue(s.title || "");
                       }}
                       onCommitEdit={() => {
-                        const t = editingValue.trim();
-                        if (t) onRename(s.id, t);
+                        const trimmed = editingValue.trim();
+                        if (trimmed) onRename(s.id, trimmed);
                         setEditingId(null);
                       }}
                       onCancelEdit={() => setEditingId(null)}
@@ -201,6 +211,7 @@ function SessionRow({
   onCancelEdit,
   onDelete,
 }: RowProps) {
+  const { t } = useT();
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -210,7 +221,7 @@ function SessionRow({
     }
   }, [editing]);
 
-  const displayTitle = session.title || "New chat";
+  const displayTitle = session.title || t("sidepanel.sessions.newChatTitle");
 
   return (
     <li
@@ -230,7 +241,7 @@ function SessionRow({
           "mr-0.5 h-1.5 w-1.5 shrink-0 rounded-full",
           isOpen ? "bg-foreground/40" : "bg-transparent",
         )}
-        title={isOpen ? "Open as tab" : ""}
+        title={isOpen ? t("sidepanel.sessions.openAsTab") : ""}
       />
 
       {editing ? (
@@ -268,8 +279,16 @@ function SessionRow({
 
       {editing ? (
         <>
-          <RowAction icon={Check} title="Save" onClick={onCommitEdit} />
-          <RowAction icon={X} title="Cancel" onClick={onCancelEdit} />
+          <RowAction
+            icon={Check}
+            title={t("sidepanel.sessions.save")}
+            onClick={onCommitEdit}
+          />
+          <RowAction
+            icon={X}
+            title={t("sidepanel.sessions.cancel")}
+            onClick={onCancelEdit}
+          />
         </>
       ) : (
         <div
@@ -278,14 +297,20 @@ function SessionRow({
             active ? "opacity-100" : "group-hover:opacity-100",
           )}
         >
-          <RowAction icon={Pencil} title="Rename" onClick={onStartEdit} />
+          <RowAction
+            icon={Pencil}
+            title={t("sidepanel.sessions.rename")}
+            onClick={onStartEdit}
+          />
           <RowAction
             icon={Trash2}
-            title="Delete permanently"
+            title={t("sidepanel.sessions.deletePermanently")}
             onClick={() => {
               if (
                 confirm(
-                  `Permanently delete "${displayTitle}"? This drops the session and its messages from History — closing the tab from the top bar would have just hidden it.`,
+                  t("sidepanel.sessions.deleteConfirm", {
+                    title: displayTitle,
+                  }),
                 )
               ) {
                 onDelete();

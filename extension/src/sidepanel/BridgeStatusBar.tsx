@@ -28,6 +28,7 @@ import { AppWindow, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { Button } from "~components/ui/button";
+import { useT } from "~lib/i18n";
 import type { ConnectionState } from "~lib/types";
 import { cn } from "~lib/utils";
 
@@ -70,6 +71,7 @@ export function BridgeStatusBar({
   messages,
   afterConnection,
 }: BridgeStatusBarProps = {}) {
+  const { t } = useT();
   const [resp, setResp] = useState<StatusResponse>({ state: "disconnected" });
   const [busy, setBusy] = useState(false);
 
@@ -96,9 +98,9 @@ export function BridgeStatusBar({
     // restart races). 5s is much less aggressive than the popup's 1.5s
     // because the side panel is long-lived and broadcasts cover the
     // common case.
-    const t = setInterval(() => void refreshStatus(), 5000);
+    const intervalId = setInterval(() => void refreshStatus(), 5000);
     return () => {
-      clearInterval(t);
+      clearInterval(intervalId);
       chrome.runtime.onMessage.removeListener(onMsg);
     };
   }, []);
@@ -137,21 +139,30 @@ export function BridgeStatusBar({
       ? "bg-[hsl(var(--success))] shadow-[0_0_8px_hsl(var(--success))]"
       : "bg-muted-foreground";
 
-  const label = connecting ? "Connecting…" : online ? "Online" : "Offline";
+  const label = connecting
+    ? t("sidepanel.status.connecting")
+    : online
+      ? t("sidepanel.status.online")
+      : t("sidepanel.status.offline");
 
   // Aggregated tooltip carries the bits we used to show in the popup's
   // Bridge card. Keeping them in `title` avoids dedicating a second row
   // of pixels to information that's only occasionally interesting.
   const tooltipLines = [
-    `Hermes Browser Extension · ${state}`,
+    t("sidepanel.status.tooltipBase", { state }),
     resp.agentAlive
-      ? `Agent window: #${resp.agentWindowId} · tab ${resp.agentTabId}`
-      : "Agent window: not running",
+      ? t("sidepanel.status.tooltip.agentRunning", {
+          windowId: resp.agentWindowId,
+          tabId: resp.agentTabId,
+        })
+      : t("sidepanel.status.tooltip.agentDown"),
   ];
   if (resp.url) tooltipLines.push(resp.url);
   tooltipLines.push("");
   tooltipLines.push(
-    online || connecting ? "Click to disconnect" : "Click to connect",
+    online || connecting
+      ? t("sidepanel.status.tooltip.clickDisconnect")
+      : t("sidepanel.status.tooltip.clickConnect"),
   );
   const tooltip = tooltipLines.join("\n");
 
@@ -164,7 +175,13 @@ export function BridgeStatusBar({
         onClick={toggleConnect}
         disabled={busy}
         title={tooltip}
-        aria-label={`Hermes Browser Extension ${label}. ${online || connecting ? "Click to disconnect" : "Click to connect"}.`}
+        aria-label={t("sidepanel.status.aria.bar", {
+          label,
+          action:
+            online || connecting
+              ? t("sidepanel.status.tooltip.clickDisconnect")
+              : t("sidepanel.status.tooltip.clickConnect"),
+        })}
         className={cn(
           "inline-flex h-6 shrink-0 select-none items-center gap-1.5 rounded-full border pl-2 pr-2.5 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
           online
@@ -206,10 +223,10 @@ export function BridgeStatusBar({
           disabled={busy || !resp.agentAlive}
           title={
             resp.agentAlive
-              ? "Show agent window"
-              : "Agent window not running — connect first"
+              ? t("sidepanel.status.showAgentWindow")
+              : t("sidepanel.status.showAgentWindow.disabled")
           }
-          aria-label="Show agent window"
+          aria-label={t("sidepanel.status.showAgentWindow")}
         >
           <AppWindow />
         </Button>
@@ -219,6 +236,7 @@ export function BridgeStatusBar({
 }
 
 function StatusChip({ message }: { message: BridgeStatusMessage }) {
+  const { t } = useT();
   const level: BridgeStatusLevel = message.level ?? "warning";
   const styles =
     level === "error"
@@ -249,8 +267,8 @@ function StatusChip({ message }: { message: BridgeStatusMessage }) {
         <button
           type="button"
           onClick={message.onDismiss}
-          title="Dismiss"
-          aria-label="Dismiss"
+          title={t("sidepanel.status.dismiss")}
+          aria-label={t("sidepanel.status.dismiss")}
           className="ml-0.5 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
         >
           <X className="h-2.5 w-2.5" />

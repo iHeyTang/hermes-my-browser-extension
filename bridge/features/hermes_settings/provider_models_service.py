@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..adapters.hermes_core import (
+from ...adapters.hermes_core import (
     curated_models_for_provider,
     get_pricing_for_provider,
     hermes_cli_models_available,

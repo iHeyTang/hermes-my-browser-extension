@@ -36,6 +36,7 @@ import "~style.css";
 import { HermesLogo } from "~components/hermes-logo";
 import { Input } from "~components/ui/input";
 import { ScrollArea } from "~components/ui/scroll-area";
+import { useT, type TranslateFn } from "~lib/i18n";
 import { useSessions } from "~lib/sessions/use-sessions";
 import type { SessionMeta } from "~lib/sessions/types";
 import { useResolvedTheme } from "~lib/theme";
@@ -46,11 +47,27 @@ import SidePanel, { type MessagesMaxWidth } from "../sidepanel";
 const MESSAGES_WIDTH_KEY = "settings.chat.messagesWidth";
 const DEFAULT_MESSAGES_WIDTH: MessagesMaxWidth = "comfortable";
 
-const WIDTH_OPTIONS: Array<{ value: MessagesMaxWidth; label: string; tooltip: string }> = [
-  { value: "narrow", label: "Narrow", tooltip: "Narrow message column (same as input)" },
-  { value: "comfortable", label: "Medium", tooltip: "Medium message column" },
-  { value: "full", label: "Full", tooltip: "Full-width messages" },
-];
+function widthOptions(
+  t: TranslateFn,
+): Array<{ value: MessagesMaxWidth; label: string; tooltip: string }> {
+  return [
+    {
+      value: "narrow",
+      label: t("chat.width.narrow"),
+      tooltip: t("chat.width.narrow.tooltip"),
+    },
+    {
+      value: "comfortable",
+      label: t("chat.width.medium"),
+      tooltip: t("chat.width.medium.tooltip"),
+    },
+    {
+      value: "full",
+      label: t("chat.width.full"),
+      tooltip: t("chat.width.full.tooltip"),
+    },
+  ];
+}
 
 function isMessagesMaxWidth(v: unknown): v is MessagesMaxWidth {
   return v === "narrow" || v === "comfortable" || v === "full";
@@ -140,40 +157,45 @@ export default function ChatTab() {
 // Top bar
 // ---------------------------------------------------------------------------
 
+interface TopBarProps {
+  messagesWidth: MessagesMaxWidth;
+  onMessagesWidthChange: (next: MessagesMaxWidth) => void;
+  onNewChat: () => void;
+  onOpenSettings: () => void;
+}
+
 function TopBar({
   messagesWidth,
   onMessagesWidthChange,
   onNewChat,
   onOpenSettings,
-}: {
-  messagesWidth: MessagesMaxWidth;
-  onMessagesWidthChange: (next: MessagesMaxWidth) => void;
-  onNewChat: () => void;
-  onOpenSettings: () => void;
-}) {
+}: TopBarProps) {
+  const { t } = useT();
   return (
     <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-muted/15 px-4 py-2">
       <div className="flex items-center gap-2.5">
         <HermesLogo size={20} />
-        <p className="text-sm font-semibold tracking-tight">Hermes Chat</p>
+        <p className="text-sm font-semibold tracking-tight">
+          {t("chat.title")}
+        </p>
       </div>
       <div className="flex items-center gap-1">
         <button
           type="button"
           onClick={onNewChat}
           className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          title="Start a new chat"
+          title={t("chat.newChat")}
         >
           <Plus className="h-3.5 w-3.5" />
-          New chat
+          {t("sidepanel.tabbar.button.new")}
         </button>
         <WidthToggle value={messagesWidth} onChange={onMessagesWidthChange} />
         <button
           type="button"
           onClick={onOpenSettings}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          aria-label="Open Hermes options"
-          title="Open Hermes options"
+          aria-label={t("chat.openOptions")}
+          title={t("chat.openOptions")}
         >
           <Settings className="h-4 w-4" />
         </button>
@@ -195,13 +217,15 @@ function WidthToggle({
   value: MessagesMaxWidth;
   onChange: (next: MessagesMaxWidth) => void;
 }) {
+  const { t } = useT();
+  const options = widthOptions(t);
   return (
     <div
       role="radiogroup"
-      aria-label="Message column width"
+      aria-label={t("chat.width.label")}
       className="flex items-center"
     >
-      {WIDTH_OPTIONS.map((opt) => {
+      {options.map((opt) => {
         const active = opt.value === value;
         return (
           <button
@@ -272,16 +296,17 @@ function SessionsRail({
   onRename,
   onDelete,
 }: SessionsRailProps) {
+  const { t } = useT();
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const live = sessions.filter((s) => !s.archived);
     if (!q) return live;
     return live.filter((s) =>
-      (s.title || "untitled chat").toLowerCase().includes(q),
+      (s.title || t("chat.untitled")).toLowerCase().includes(q),
     );
-  }, [sessions, query]);
+  }, [sessions, query, t]);
 
-  const groups = useMemo(() => groupByRecency(filtered), [filtered]);
+  const groups = useMemo(() => groupByRecency(filtered, t), [filtered, t]);
 
   return (
     <>
@@ -291,7 +316,7 @@ function SessionsRail({
           type="text"
           value={query}
           onChange={(e) => onQuery(e.target.value)}
-          placeholder="Search sessions…"
+          placeholder={t("chat.searchPlaceholder")}
           className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground/70"
         />
         {query && (
@@ -299,7 +324,7 @@ function SessionsRail({
             type="button"
             onClick={() => onQuery("")}
             className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-            aria-label="Clear search"
+            aria-label={t("chat.searchClear")}
           >
             <X className="h-3 w-3" />
           </button>
@@ -309,11 +334,11 @@ function SessionsRail({
       <ScrollArea className="min-h-0 flex-1">
         {!ready ? (
           <p className="px-3 py-4 text-[11px] text-muted-foreground">
-            Loading sessions…
+            {t("chat.loadingSessions")}
           </p>
         ) : filtered.length === 0 ? (
           <p className="px-3 py-4 text-[11px] text-muted-foreground">
-            {query ? "No matches." : "No saved sessions yet."}
+            {query ? t("chat.noMatches") : t("chat.noSessions")}
           </p>
         ) : (
           <nav className="flex flex-col py-1">
@@ -358,6 +383,7 @@ function SessionRow({
   onRename,
   onDelete,
 }: SessionRowProps) {
+  const { t } = useT();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.title);
 
@@ -418,7 +444,7 @@ function SessionRow({
     >
       <MessageSquare className="h-3.5 w-3.5 shrink-0" />
       <span className="min-w-0 flex-1 truncate text-xs font-medium">
-        {session.title?.trim() || "Untitled chat"}
+        {session.title?.trim() || t("chat.untitled")}
       </span>
       <span className="hidden shrink-0 items-center gap-0.5 group-hover:flex">
         <button
@@ -428,8 +454,8 @@ function SessionRow({
             setEditing(true);
           }}
           className="rounded p-0.5 text-muted-foreground/70 transition-colors hover:bg-foreground/10 hover:text-foreground"
-          title="Rename"
-          aria-label="Rename"
+          title={t("chat.rename")}
+          aria-label={t("chat.rename")}
         >
           <Pencil className="h-3 w-3" />
         </button>
@@ -446,8 +472,8 @@ function SessionRow({
             }
           }}
           className="rounded p-0.5 text-muted-foreground/70 transition-colors hover:bg-destructive/15 hover:text-destructive"
-          title="Delete"
-          aria-label="Delete"
+          title={t("chat.delete")}
+          aria-label={t("chat.delete")}
         >
           <Trash2 className="h-3 w-3" />
         </button>
@@ -474,7 +500,10 @@ interface SessionGroup {
  * Within each bucket, newest first (the input arrives in whatever order
  * `useSessions` returned — we sort defensively).
  */
-function groupByRecency(sessions: SessionMeta[]): SessionGroup[] {
+function groupByRecency(
+  sessions: SessionMeta[],
+  t: TranslateFn,
+): SessionGroup[] {
   const now = new Date();
   const startOfToday = new Date(
     now.getFullYear(),
@@ -484,9 +513,9 @@ function groupByRecency(sessions: SessionMeta[]): SessionGroup[] {
   const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
 
   const groups: SessionGroup[] = [
-    { key: "today", label: "Today", items: [] },
-    { key: "yesterday", label: "Yesterday", items: [] },
-    { key: "older", label: "Older", items: [] },
+    { key: "today", label: t("chat.group.today"), items: [] },
+    { key: "yesterday", label: t("chat.group.yesterday"), items: [] },
+    { key: "older", label: t("chat.group.older"), items: [] },
   ];
 
   for (const s of sessions) {

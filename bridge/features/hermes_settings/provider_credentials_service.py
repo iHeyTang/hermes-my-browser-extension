@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from ..adapters.dotenv_local import (
+from ...adapters.dotenv_local import (
     get_dotenv_values_for_keys,
     is_valid_env_key,
     merge_dotenv_file_and_apply,
 )
-from ..adapters.hermes_provider_env import env_var_names_for_slug
+from ...adapters.hermes_provider_env import env_var_names_for_slug
 
 # Matches extension ``HermesModelConfigTab`` custom-provider UX.
 _CUSTOM_PROVIDER_ENV_KEYS = (

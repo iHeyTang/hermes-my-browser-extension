@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from ..services.cron_service import (
+from ...common import json_error, read_json_object
+from .output_service import get_run, list_recent_runs
+from .service import (
     create_job_response,
     delete_job_response,
     get_job_response,
@@ -13,7 +15,15 @@ from ..services.cron_service import (
     trigger_job_response,
     update_job_response,
 )
-from .common import json_error, read_json_object
+
+
+def _parse_int(value: str | None, default: int | None = None) -> int | None:
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
 
 
 async def handle_list_jobs(_request: web.Request) -> web.Response:
@@ -94,6 +104,28 @@ async def handle_delete_job(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
+async def handle_output_index(request: web.Request) -> web.Response:
+    since_ms = _parse_int(request.query.get("since_ms"))
+    limit = _parse_int(request.query.get("limit"), 100) or 100
+    include_silent = request.query.get("include_silent", "1") not in ("0", "false", "no")
+    payload = list_recent_runs(
+        since_ms=since_ms,
+        limit=limit,
+        include_silent=include_silent,
+    )
+    return web.json_response(payload)
+
+
+async def handle_output_detail(request: web.Request) -> web.Response:
+    job_id = request.match_info.get("job_id", "")
+    run_id = request.match_info.get("run_id", "")
+    payload = get_run(job_id, run_id)
+    if not payload.get("ok"):
+        status = 404 if payload.get("error") == "run not found" else 400
+        return web.json_response(payload, status=status)
+    return web.json_response(payload)
+
+
 async def handle_parse_schedule(request: web.Request) -> web.Response:
     try:
         body = await read_json_object(request)
@@ -108,7 +140,7 @@ async def handle_parse_schedule(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
-def register_cron_routes(app: web.Application) -> None:
+def register(app: web.Application) -> None:
     app.add_routes(
         [
             web.get("/hermes/cron/jobs", handle_list_jobs),
@@ -120,5 +152,9 @@ def register_cron_routes(app: web.Application) -> None:
             web.post("/hermes/cron/jobs/{job_id}/pause", handle_pause_job),
             web.post("/hermes/cron/jobs/{job_id}/resume", handle_resume_job),
             web.post("/hermes/cron/jobs/{job_id}/trigger", handle_trigger_job),
+            web.get("/hermes/cron/output/index", handle_output_index),
+            web.get(
+                "/hermes/cron/output/{job_id}/{run_id}", handle_output_detail
+            ),
         ]
     )

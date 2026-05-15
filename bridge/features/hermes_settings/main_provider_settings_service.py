@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from ..adapters.hermes_agent_model import read_main_model, write_main_model
+from ...adapters.hermes_agent_model import read_main_model, write_main_model
 from .provider_credentials_service import (
     merge_credentials_for_provider,
     read_provider_credentials_response,

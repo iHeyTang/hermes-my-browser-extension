@@ -171,6 +171,8 @@ atexit.register(stop_bridge)
 def _tools_registration_bundle():
     """Import Hermes-facing tool modules only when registering (not in bridge subprocess)."""
     from .tools import (
+        MY_BROWSER_BOOKMARKS_LIST_SCHEMA,
+        MY_BROWSER_BOOKMARKS_MANAGE_SCHEMA,
         MY_BROWSER_CHAT_URL_SCHEMA,
         MY_BROWSER_CLICK_SCHEMA,
         MY_BROWSER_EVAL_SCHEMA,
@@ -189,6 +191,8 @@ def _tools_registration_bundle():
         MY_BROWSER_USERSCRIPT_MANAGE_SCHEMA,
         MY_BROWSER_USERSCRIPT_RUN_SCHEMA,
         _check_my_browser_available,
+        _handle_my_browser_bookmarks_list,
+        _handle_my_browser_bookmarks_manage,
         _handle_my_browser_chat_url,
         _handle_my_browser_click,
         _handle_my_browser_eval,
@@ -227,6 +231,8 @@ def _tools_registration_bundle():
         ("my_browser_userscript_list", MY_BROWSER_USERSCRIPT_LIST_SCHEMA, _handle_my_browser_userscript_list, "📜"),
         ("my_browser_userscript_manage", MY_BROWSER_USERSCRIPT_MANAGE_SCHEMA, _handle_my_browser_userscript_manage, "🛠"),
         ("my_browser_userscript_run", MY_BROWSER_USERSCRIPT_RUN_SCHEMA, _handle_my_browser_userscript_run, "🚀"),
+        ("my_browser_bookmarks_list", MY_BROWSER_BOOKMARKS_LIST_SCHEMA, _handle_my_browser_bookmarks_list, "🔖"),
+        ("my_browser_bookmarks_manage", MY_BROWSER_BOOKMARKS_MANAGE_SCHEMA, _handle_my_browser_bookmarks_manage, "🗂"),
         ("my_browser_chat_url", MY_BROWSER_CHAT_URL_SCHEMA, _handle_my_browser_chat_url, "💬"),
     )
     return tools, _check_my_browser_available, _on_session_start, _on_session_end

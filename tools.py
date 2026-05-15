@@ -374,6 +374,109 @@ MY_BROWSER_USERSCRIPT_RUN_SCHEMA = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Bookmarks — read + write the user's browser bookmarks via the extension.
+# `chrome.bookmarks.*` is only reachable from the extension service worker,
+# so these speak to dedicated bridge handlers (not the page-context `eval`).
+# ---------------------------------------------------------------------------
+
+MY_BROWSER_BOOKMARKS_LIST_SCHEMA = {
+    "name": "my_browser_bookmarks_list",
+    "description": (
+        "Read the user's browser bookmarks. With no arguments, returns the "
+        "full bookmark tree (folders and bookmarks, nested). Pass `query` to "
+        "search by title/URL, or `id` to fetch just one node's subtree. A "
+        "folder node has `children` and no `url`; a bookmark node has a "
+        "`url`. Use the returned `id`s with my_browser_bookmarks_manage."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "Search text matched against bookmark titles and URLs. "
+                    "Omit to return the whole tree."
+                ),
+            },
+            "id": {
+                "type": "string",
+                "description": (
+                    "Bookmark/folder node id — returns that node and its "
+                    "subtree. Ignored when `query` is set."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
+MY_BROWSER_BOOKMARKS_MANAGE_SCHEMA = {
+    "name": "my_browser_bookmarks_manage",
+    "description": (
+        "Create, edit, move or delete browser bookmarks. Pick one `action`:\n"
+        "  - `create`: add a bookmark or folder. Provide `title`; add `url` "
+        "for a bookmark, or omit it for a folder. Optional `parentId` (folder "
+        "to create it in; defaults to 'Other bookmarks') and `index`.\n"
+        "  - `update`: rename a node or re-point a bookmark. Requires `id`; "
+        "provide `title` and/or `url`.\n"
+        "  - `move`: relocate a node. Requires `id`; provide `parentId` "
+        "and/or `index`.\n"
+        "  - `remove`: delete a bookmark or an empty folder. Requires `id`. "
+        "To delete a non-empty folder, set `recursive` true.\n"
+        "Discover node ids with my_browser_bookmarks_list first. Writes are "
+        "immediate and visible to the user — confirm destructive removes with "
+        "them unless they already asked for it."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["create", "update", "move", "remove"],
+                "description": "Operation to perform.",
+            },
+            "id": {
+                "type": "string",
+                "description": "Target node id. Required for update/move/remove.",
+            },
+            "title": {
+                "type": "string",
+                "description": (
+                    "Bookmark/folder title. Required for create; optional "
+                    "for update."
+                ),
+            },
+            "url": {
+                "type": "string",
+                "description": (
+                    "Bookmark URL. Provide for a bookmark on create; omit "
+                    "for a folder. Optional for update."
+                ),
+            },
+            "parentId": {
+                "type": "string",
+                "description": "Parent folder id. Optional for create/move.",
+            },
+            "index": {
+                "type": "integer",
+                "description": (
+                    "0-based position within the parent folder. Optional "
+                    "for create/move."
+                ),
+            },
+            "recursive": {
+                "type": "boolean",
+                "description": (
+                    "remove only: delete a folder and everything inside it. "
+                    "Default false (errors on a non-empty folder)."
+                ),
+            },
+        },
+        "required": ["action"],
+    },
+}
+
 MY_BROWSER_CHAT_URL_SCHEMA = {
     "name": "my_browser_chat_url",
     "description": (
@@ -383,6 +486,7 @@ MY_BROWSER_CHAT_URL_SCHEMA = {
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
+
 
 # ---------------------------------------------------------------------------
 # Gating
@@ -1367,6 +1471,118 @@ def _handle_my_browser_userscript_run(args: dict, **kw: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Bookmarks handlers — relay to the extension's `bookmarks.*` bridge methods.
+# ---------------------------------------------------------------------------
+
+
+def _handle_my_browser_bookmarks_list(args: dict, **kw: Any) -> str:
+    args = args or {}
+    params: Dict[str, Any] = {}
+    query = args.get("query")
+    node_id = args.get("id")
+    if isinstance(query, str) and query.strip():
+        params["query"] = query.strip()
+    elif isinstance(node_id, str) and node_id.strip():
+        params["id"] = node_id.strip()
+    resp = _send("bookmarks.list", params, timeout=15.0)
+    ok, body = _unwrap(resp)
+    if not ok:
+        return tool_error(f"my_browser_bookmarks_list: {body}")
+    nodes = body.get("nodes") or []
+    return tool_result({
+        "success": True,
+        "count": len(nodes),
+        "nodes": nodes,
+    })
+
+
+def _handle_my_browser_bookmarks_manage(args: dict, **kw: Any) -> str:
+    args = args or {}
+    action = (args.get("action") or "").strip()
+    node_id = (args.get("id") or "").strip()
+    prefix = f"my_browser_bookmarks_manage({action or '?'})"
+
+    def _int(value: Any) -> Optional[int]:
+        # JSON booleans are ints in Python — keep them out of `index`.
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    if action == "create":
+        title = args.get("title")
+        url = args.get("url")
+        if not isinstance(title, str) or not title.strip():
+            return tool_error(f"{prefix}: title is required")
+        params: Dict[str, Any] = {"title": title}
+        if isinstance(url, str) and url.strip():
+            params["url"] = url.strip()
+        if isinstance(args.get("parentId"), str) and args["parentId"]:
+            params["parentId"] = args["parentId"]
+        if _int(args.get("index")) is not None:
+            params["index"] = args["index"]
+        resp = _send("bookmarks.create", params, timeout=15.0)
+        ok, body = _unwrap(resp)
+        if not ok:
+            return tool_error(f"{prefix}: {body}")
+        node = body.get("node") or {}
+        kind = "bookmark" if node.get("url") else "folder"
+        return tool_result({
+            "success": True,
+            "id": node.get("id"),
+            "node": node,
+            "message": f"Created {kind} {node.get('title')!r}.",
+        })
+
+    if action == "update":
+        if not node_id:
+            return tool_error(f"{prefix}: id is required")
+        title = args.get("title")
+        url = args.get("url")
+        params = {"id": node_id}
+        if isinstance(title, str):
+            params["title"] = title
+        if isinstance(url, str):
+            params["url"] = url
+        if "title" not in params and "url" not in params:
+            return tool_error(f"{prefix}: provide title and/or url")
+        resp = _send("bookmarks.update", params, timeout=15.0)
+        ok, body = _unwrap(resp)
+        if not ok:
+            return tool_error(f"{prefix}: {body}")
+        return tool_result({"success": True, "node": body.get("node")})
+
+    if action == "move":
+        if not node_id:
+            return tool_error(f"{prefix}: id is required")
+        params = {"id": node_id}
+        if isinstance(args.get("parentId"), str) and args["parentId"]:
+            params["parentId"] = args["parentId"]
+        if _int(args.get("index")) is not None:
+            params["index"] = args["index"]
+        if "parentId" not in params and "index" not in params:
+            return tool_error(f"{prefix}: provide parentId and/or index")
+        resp = _send("bookmarks.move", params, timeout=15.0)
+        ok, body = _unwrap(resp)
+        if not ok:
+            return tool_error(f"{prefix}: {body}")
+        return tool_result({"success": True, "node": body.get("node")})
+
+    if action == "remove":
+        if not node_id:
+            return tool_error(f"{prefix}: id is required")
+        params = {"id": node_id, "recursive": bool(args.get("recursive", False))}
+        resp = _send("bookmarks.remove", params, timeout=15.0)
+        ok, body = _unwrap(resp)
+        if not ok:
+            return tool_error(f"{prefix}: {body}")
+        return tool_result({
+            "success": True,
+            "removed": body.get("removed"),
+            "message": f"Removed bookmark node {body.get('removed')}.",
+        })
+
+    return tool_error(f"{prefix}: unknown action {action!r}")
+
+
+# ---------------------------------------------------------------------------
 # Hermes gateway HTTP API discovery — used by the side-panel chat client.
 # ---------------------------------------------------------------------------
 
@@ -1432,3 +1648,5 @@ def _handle_my_browser_chat_url(args: dict, **kw: Any) -> str:
             + (f" (status: {api_status})" if api_status else "")
         ),
     })
+
+

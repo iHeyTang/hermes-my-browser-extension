@@ -4,11 +4,11 @@ from urllib.parse import unquote
 
 from aiohttp import web
 
-from ..services.model_catalog_service import (
+from .model_catalog_service import (
     build_model_catalog_response,
     build_provider_models_http_response,
 )
-from .common import json_error
+from ...common import json_error
 
 
 async def handle_model_catalog(request: web.Request) -> web.Response:

@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from ..adapters.hermes_agent_model import read_config_provider_keys
-from ..adapters.hermes_core import load_canonical_providers
-from ..adapters.hermes_model_catalog import get_model_catalog_manifest, merge_provider_ids
-from ..adapters.hermes_provider_env import (
+from ...adapters.hermes_agent_model import read_config_provider_keys
+from ...adapters.hermes_core import load_canonical_providers
+from ...adapters.hermes_model_catalog import get_model_catalog_manifest, merge_provider_ids
+from ...adapters.hermes_provider_env import (
     collect_provider_env_var_map,
     provider_slugs_with_credentials_set,
 )

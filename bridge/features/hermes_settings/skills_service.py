@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..adapters.hermes_core import hermes_home
+from ...adapters.hermes_core import hermes_home
 
 logger = logging.getLogger("my-browser-bridge")
 

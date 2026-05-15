@@ -130,6 +130,20 @@ async function bootstrap() {
     console.log("[hermes-bridge] Auto-reconnecting (desiredConnected=true)");
     connect();
   }
+
+  // One-shot cleanup of legacy storage keys from removed features (inbox
+  // local cache + digest snapshot/history/config). The new-tab page pulls
+  // cron run data from the bridge on demand and stores nothing locally.
+  void chrome.storage.local
+    .remove([
+      "inbox.cards",
+      "inbox.cursor",
+      "inbox.cronShapeMigrationDone",
+      "digest.snapshot",
+      "digest.history",
+      "digest.config",
+    ])
+    .catch(() => {});
 }
 
 bootstrap().catch((e) =>
@@ -180,7 +194,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await pollUserscriptUpdates().catch((e) =>
       console.warn("[hermes-bridge] userscript update poll failed:", e),
     );
+    return;
   }
+
 });
 
 async function pollUserscriptUpdates() {

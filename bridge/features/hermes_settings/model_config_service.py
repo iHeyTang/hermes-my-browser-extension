@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from ..adapters.hermes_agent_model import (
+from ...adapters.hermes_agent_model import (
     AUXILIARY_SLOTS,
     read_auxiliary_models,
     read_main_model,

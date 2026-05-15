@@ -1,14 +1,18 @@
+"""HTTP application factory.
+
+Composes the bridge's HTTP surface from independent feature modules under
+``bridge/features/``. Each feature owns its own routes and is registered
+via the central ``FEATURES`` list there — adding or removing a feature
+touches exactly its own subpackage.
+"""
+
 from __future__ import annotations
 
 from aiohttp import web
 
-from .routes.common import json_error
-from .routes.config_routes import register_config_routes
-from .routes.cron_routes import register_cron_routes
-from .routes.memory_routes import register_memory_routes
-from .routes.misc_routes import max_client_size_bytes, register_misc_routes
-from .routes.model_routes import register_model_routes
-from .routes.skills_routes import register_skills_routes
+from .common import json_error
+from .features import register_all
+from .features.chrome_extension import max_client_size_bytes
 
 
 @web.middleware
@@ -35,12 +39,7 @@ def build_http_app() -> web.Application:
     app = web.Application(
         middlewares=[cors_middleware], client_max_size=max_client_size_bytes()
     )
-    register_model_routes(app)
-    register_config_routes(app)
-    register_memory_routes(app)
-    register_skills_routes(app)
-    register_cron_routes(app)
-    register_misc_routes(app)
+    register_all(app)
     app.router.add_route(
         "OPTIONS", "/{path_info:.*}", lambda _req: web.Response(status=204)
     )

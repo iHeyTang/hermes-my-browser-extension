@@ -8,20 +8,22 @@ import {
   type HermesMemoryEntries,
   type HermesMemoryTarget,
 } from "~lib/hermes-memory";
+import { useT, type TranslateFn } from "~lib/i18n";
 import { cn } from "~lib/utils";
 
 import { OPTIONS_SHELL_HEADER_ROW } from "./optionsPageChrome";
 
-const TARGET_LABELS: Record<HermesMemoryTarget, string> = {
-  memory: "MEMORY.md",
-  user: "USER.md",
-};
+function targetLabel(t: TranslateFn, target: HermesMemoryTarget): string {
+  return target === "user"
+    ? t("options.memory.target.user")
+    : t("options.memory.target.memory");
+}
 
-const TARGET_DESCS: Record<HermesMemoryTarget, string> = {
-  memory:
-    "Hermes Agent's own observations (environment facts, project conventions, tool quirks, etc.).",
-  user: "User preferences and collaboration habits noted by Hermes Agent.",
-};
+function targetDesc(t: TranslateFn, target: HermesMemoryTarget): string {
+  return target === "user"
+    ? t("options.memory.desc.user")
+    : t("options.memory.desc.memory");
+}
 
 function usageRatio(entry: HermesMemoryEntries): number {
   if (!entry.char_limit) return 0;
@@ -35,6 +37,7 @@ function usageColor(ratio: number): string {
 }
 
 function MemoryBlock({ entry }: { entry: HermesMemoryEntries }) {
+  const { t } = useT();
   const ratio = usageRatio(entry);
   const color = usageColor(ratio);
 
@@ -43,19 +46,21 @@ function MemoryBlock({ entry }: { entry: HermesMemoryEntries }) {
       <header className="flex flex-wrap items-baseline justify-between gap-2">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold tracking-tight">
-            {TARGET_LABELS[entry.target]}
+            {targetLabel(t, entry.target)}
           </h3>
           <p className="text-[11px] text-muted-foreground">
-            {TARGET_DESCS[entry.target]}
+            {targetDesc(t, entry.target)}
           </p>
         </div>
         <div className="text-right">
           <p className="text-xs tabular-nums text-muted-foreground">
-            {entry.char_count.toLocaleString()} /{" "}
-            {entry.char_limit.toLocaleString()} chars
+            {t("options.memory.chars", {
+              count: entry.char_count.toLocaleString(),
+              limit: entry.char_limit.toLocaleString(),
+            })}
           </p>
           <p className="text-[10px] text-muted-foreground/70">
-            {entry.entries.length} entries
+            {t("options.memory.entries", { count: entry.entries.length })}
           </p>
         </div>
       </header>
@@ -79,7 +84,9 @@ function MemoryBlock({ entry }: { entry: HermesMemoryEntries }) {
       {entry.error ? (
         <p className="text-xs text-destructive">{entry.error}</p>
       ) : entry.entries.length === 0 ? (
-        <p className="text-xs text-muted-foreground">(No memory entries yet)</p>
+        <p className="text-xs text-muted-foreground">
+          {t("options.memory.empty")}
+        </p>
       ) : (
         <ol className="space-y-2">
           {entry.entries.map((rec, i) => (
@@ -96,10 +103,14 @@ function MemoryBlock({ entry }: { entry: HermesMemoryEntries }) {
                 <span className="rounded bg-muted px-1.5 py-0.5 tabular-nums">
                   #{i + 1}
                 </span>
-                <span className="tabular-nums">{rec.text.length} chars</span>
+                <span className="tabular-nums">
+                  {t("options.memory.charsLen", { count: rec.text.length })}
+                </span>
                 {rec.flagged && (
                   <span
-                    title={`Hermes safety-scan flag: ${rec.flagged}\nThe same rules block entries before MEMORY.md is injected into the system prompt`}
+                    title={t("options.memory.flagTooltip", {
+                      flag: rec.flagged,
+                    })}
                     className="rounded bg-destructive/15 px-1.5 py-0.5 font-medium text-destructive"
                   >
                     ⚠ {rec.flagged}
@@ -117,6 +128,7 @@ function MemoryBlock({ entry }: { entry: HermesMemoryEntries }) {
 
 /** Read-only view of Hermes curated memory (MEMORY.md + USER.md). */
 export function SettingsMemory() {
+  const { t } = useT();
   const [items, setItems] = useState<HermesMemoryEntries[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -127,12 +139,12 @@ export function SettingsMemory() {
     const r = await getHermesMemoryList();
     setLoading(false);
     if (!r.ok) {
-      setError(r.error || "Failed to load");
+      setError(r.error || t("options.memory.failedToLoad"));
       setItems([]);
       return;
     }
     setItems(r.targets);
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void refresh();
@@ -145,13 +157,13 @@ export function SettingsMemory() {
       >
         <div className="flex min-w-0 flex-col justify-center gap-0.5 leading-tight">
           <h2 className="text-sm font-semibold tracking-tight text-foreground">
-            Memory
+            {t("options.memory.title")}
           </h2>
           <p
             className="truncate text-[11px] text-muted-foreground"
-            title="$HERMES_HOME/memories/{MEMORY,USER}.md"
+            title={t("options.memory.subtitle.tooltip")}
           >
-            Hermes Agent's persistent memory (read-only view)
+            {t("options.memory.subtitle")}
           </p>
         </div>
         <Button
@@ -167,7 +179,7 @@ export function SettingsMemory() {
           ) : (
             <RefreshCw className="h-3.5 w-3.5" />
           )}
-          Refresh
+          {t("options.memory.refresh")}
         </Button>
       </header>
 

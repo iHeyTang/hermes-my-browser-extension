@@ -6,6 +6,7 @@ import { Input } from "~components/ui/input";
 import { Label } from "~components/ui/label";
 import { Separator } from "~components/ui/separator";
 import { fetchHermesModelIds } from "~lib/chat/fetch-models";
+import { useT } from "~lib/i18n";
 
 import { DEFAULT_HERMES_API_BASE, DEFAULT_HERMES_MODEL } from "../background/config";
 
@@ -17,6 +18,7 @@ const KEYS = {
 
 /** Side-panel chat → hermes-agent-gateway (OpenAI-compatible HTTP). */
 export function SettingsGateway() {
+  const { t } = useT();
   const [apiBase, setApiBase] = useState(DEFAULT_HERMES_API_BASE);
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState(DEFAULT_HERMES_MODEL);
@@ -57,7 +59,7 @@ export function SettingsGateway() {
     setModelsLoading(true);
     setModelsError(null);
     const ac = new AbortController();
-    const t = window.setTimeout(() => ac.abort(), 20_000);
+    const timeoutId = window.setTimeout(() => ac.abort(), 20_000);
     try {
       const r = await fetchHermesModelIds(apiBase, apiKey, ac.signal);
       if (r.ok === false) {
@@ -66,7 +68,7 @@ export function SettingsGateway() {
       } else {
         setModelIds(r.ids);
         if (r.ids.length === 0) {
-          setModelsError("Gateway returned no models.");
+          setModelsError(t("options.gateway.model.noModels"));
         } else {
           setModelsError(null);
         }
@@ -75,7 +77,7 @@ export function SettingsGateway() {
       setModelIds([]);
       setModelsError(String((e as Error)?.message || e));
     } finally {
-      window.clearTimeout(t);
+      window.clearTimeout(timeoutId);
       setModelsLoading(false);
     }
   }
@@ -83,20 +85,24 @@ export function SettingsGateway() {
   return (
     <div className="space-y-10">
       <p className="text-xs text-muted-foreground">
-        The side panel chat talks to{" "}
+        {t("options.gateway.intro.lead")}{" "}
         <span className="font-medium text-foreground">
-          hermes-agent-gateway
+          {t("options.gateway.intro.gatewayName")}
         </span>{" "}
-        (OpenAI-compatible HTTP). Configure Hermes CLI models and keys in the{" "}
-        <span className="font-medium text-foreground">Models</span> tab.
+        {t("options.gateway.intro.protocol")}{" "}
+        {t("options.gateway.intro.configureHint")}{" "}
+        <span className="font-medium text-foreground">
+          {t("options.gateway.intro.modelsTab")}
+        </span>{" "}
+        {t("options.gateway.intro.tab")}
       </p>
 
       <section className="space-y-3">
         <h3 className="text-sm font-medium text-foreground">
-          Side panel chat (gateway HTTP)
+          {t("options.gateway.section.chat")}
         </h3>
         <div className="space-y-1.5">
-          <Label htmlFor="apiBase">API base URL</Label>
+          <Label htmlFor="apiBase">{t("options.gateway.apiBase.label")}</Label>
           <Input
             id="apiBase"
             value={apiBase}
@@ -104,13 +110,12 @@ export function SettingsGateway() {
             placeholder={DEFAULT_HERMES_API_BASE}
           />
           <p className="text-xs text-muted-foreground">
-            Only affects the side panel's direct gateway connection (default port
-            8642). Separate from the Hermes config on the Models tab.
+            {t("options.gateway.apiBase.help")}
           </p>
         </div>
         <div className="space-y-1.5">
           <div className="flex items-center justify-between gap-2">
-            <Label htmlFor="model">Chat model id</Label>
+            <Label htmlFor="model">{t("options.gateway.model.label")}</Label>
             <Button
               type="button"
               variant="ghost"
@@ -118,14 +123,14 @@ export function SettingsGateway() {
               className="h-7 gap-1 px-2 text-[11px]"
               disabled={modelsLoading}
               onClick={() => void refreshModels()}
-              title="GET /v1/models from the API base above"
+              title={t("options.gateway.model.fromGateway.tooltip")}
             >
               {modelsLoading ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : (
                 <RefreshCw className="h-3 w-3" />
               )}
-              From gateway
+              {t("options.gateway.model.fromGateway")}
             </Button>
           </div>
           <Input
@@ -147,25 +152,30 @@ export function SettingsGateway() {
           )}
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="apiKey">API key (optional)</Label>
+          <Label htmlFor="apiKey">{t("options.gateway.apiKey.label")}</Label>
           <Input
             id="apiKey"
             type="password"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            placeholder="leave empty if your gateway doesn't require auth"
+            placeholder={t("options.gateway.apiKey.placeholder")}
           />
         </div>
         <p className="text-xs text-muted-foreground">
-          Multiple sessions are managed in the side panel's{" "}
-          <span className="font-medium text-foreground">Sessions</span> view;
-          each request carries an{" "}
-          <code className="font-mono">X-Hermes-Session-Id</code> header.
+          {t("options.gateway.sessions.help.before")}{" "}
+          <span className="font-medium text-foreground">
+            {t("options.gateway.sessions.help.sessions")}
+          </span>{" "}
+          {t("options.gateway.sessions.help.after")}{" "}
+          <code className="font-mono">X-Hermes-Session-Id</code>{" "}
+          {t("options.gateway.sessions.help.headerSuffix")}
         </p>
         <div className="flex items-center gap-2">
-          <Button onClick={() => void save()}>Save</Button>
+          <Button onClick={() => void save()}>{t("options.gateway.save")}</Button>
           {saved && (
-            <span className="text-xs text-[hsl(var(--success))]">Saved.</span>
+            <span className="text-xs text-[hsl(var(--success))]">
+              {t("options.gateway.saved")}
+            </span>
           )}
         </div>
       </section>
@@ -173,15 +183,17 @@ export function SettingsGateway() {
       <Separator />
 
       <section className="space-y-2 text-sm">
-        <h3 className="text-sm font-medium text-foreground">Bridge</h3>
+        <h3 className="text-sm font-medium text-foreground">
+          {t("options.gateway.bridge.title")}
+        </h3>
         <p className="text-muted-foreground">
-          The WebSocket bridge is fixed at{" "}
+          {t("options.gateway.bridge.fixed.before")}{" "}
           <code className="font-mono text-foreground">ws://127.0.0.1:9393</code>
-          . To use a different port, set{" "}
+          {t("options.gateway.bridge.fixed.after")}{" "}
           <code className="font-mono text-foreground">
             MY_BROWSER_BRIDGE_PORT
           </code>{" "}
-          on the Hermes side and rebuild the extension.
+          {t("options.gateway.bridge.fixed.suffix")}
         </p>
       </section>
     </div>

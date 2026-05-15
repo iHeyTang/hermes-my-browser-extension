@@ -4,17 +4,17 @@ from urllib.parse import unquote
 
 from aiohttp import web
 
-from ..services.main_provider_settings_service import (
+from .main_provider_settings_service import (
     read_main_provider_settings_response,
     save_main_provider_settings_response,
 )
-from ..services.model_config_service import (
+from .model_config_service import (
     read_auxiliary_models_response,
     read_main_model_response,
     write_auxiliary_models_response,
     write_main_model_response,
 )
-from .common import json_error, read_json_object
+from ...common import json_error, read_json_object
 
 
 async def handle_main_provider_settings_get(request: web.Request) -> web.Response:

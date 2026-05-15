@@ -29,8 +29,13 @@ provides_tools:
   - my_browser_userscript_list
   - my_browser_userscript_manage
   - my_browser_userscript_run
+  # Bookmarks (read + write the user's browser bookmarks)
+  - my_browser_bookmarks_list
+  - my_browser_bookmarks_manage
   # Chat side panel discovery
   - my_browser_chat_url
+  # Agent-authored Inbox cards (proactive surfacing on the new-tab page)
+  - my_browser_inbox_push
 hooks:
   - on_session_start
   - on_session_end

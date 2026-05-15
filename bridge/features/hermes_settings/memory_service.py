@@ -21,7 +21,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..adapters.hermes_core import hermes_home
+from ...adapters.hermes_core import hermes_home
 
 logger = logging.getLogger("my-browser-bridge")
 

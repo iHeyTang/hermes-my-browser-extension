@@ -14,6 +14,7 @@ import { Button } from "~components/ui/button";
 import { Input } from "~components/ui/input";
 import { Label } from "~components/ui/label";
 import { ScrollArea } from "~components/ui/scroll-area";
+import { useT } from "~lib/i18n";
 
 import { OPTIONS_SHELL_HEADER_ROW } from "./optionsPageChrome";
 import {
@@ -173,6 +174,7 @@ function ModelEntryMetadataLine({
 }
 
 export function HermesModelConfigTab() {
+  const { t } = useT();
   // ── Shared / catalog state ─────────────────────────────────────────────
   const [catalog, setCatalog] = useState<HermesModelCatalogResponse | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(true);
@@ -654,15 +656,19 @@ export function HermesModelConfigTab() {
         className={`${OPTIONS_SHELL_HEADER_ROW} flex-wrap justify-between gap-3 bg-muted/20 px-4`}
       >
         <div className="flex min-w-0 flex-col justify-center gap-0.5 leading-tight">
-          <h2 className="text-sm font-semibold tracking-tight text-foreground">Models</h2>
+          <h2 className="text-sm font-semibold tracking-tight text-foreground">
+            {t("options.models.title")}
+          </h2>
           <p className="truncate text-[11px] text-muted-foreground">
             {catalogLoading
-              ? "Loading…"
+              ? t("options.models.catalog.loading")
               : catalog?.ok
                 ? catalog.updated_at
-                  ? `Catalog ${catalog.updated_at}`
-                  : "Catalog ready"
-                : "Catalog unavailable"}
+                  ? t("options.models.catalog.updatedAt", {
+                      time: catalog.updated_at,
+                    })
+                  : t("options.models.catalog.ready")
+                : t("options.models.catalog.unavailable")}
           </p>
         </div>
         <Button
@@ -678,13 +684,13 @@ export function HermesModelConfigTab() {
           ) : (
             <RefreshCw className="h-3.5 w-3.5" />
           )}
-          Refresh catalog
+          {t("options.models.refreshCatalog")}
         </Button>
       </header>
 
       {mainLoading ? (
         <div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground">
-          Loading settings…
+          {t("options.models.loadingSettings")}
         </div>
       ) : (
         <div className="flex min-h-0 flex-1">

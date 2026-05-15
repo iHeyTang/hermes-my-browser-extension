@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from ..services.skills_service import (
+from .skills_service import (
     list_skill_files,
     list_skills_response,
     read_skill_file,
     toggle_skill,
 )
-from .common import json_error, read_json_object
+from ...common import json_error, read_json_object
 
 
 async def handle_skills_list(_request: web.Request) -> web.Response:

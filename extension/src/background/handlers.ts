@@ -11,6 +11,13 @@
 import type { ScriptWorld } from "~lib/types";
 
 import { ensureAgentWindow, waitForTabComplete } from "./agent-window";
+import {
+  createBookmark,
+  listBookmarks,
+  moveBookmark,
+  removeBookmark,
+  updateBookmark,
+} from "./bookmarks";
 import { setRunTarget, state } from "./state";
 import { resolveTargetTab, resolveUserTab } from "./target";
 import {
@@ -840,6 +847,27 @@ const userscript_run: Handler = async (params = {}) => {
 };
 
 // ---------------------------------------------------------------------------
+// Bookmarks — `chrome.bookmarks.*`, only reachable from this SW context.
+// ---------------------------------------------------------------------------
+
+const bookmarks_list: Handler = async (params = {}) =>
+  listBookmarks(params as { query?: string; id?: string });
+
+const bookmarks_create: Handler = async (params = {}) =>
+  createBookmark(
+    params as { parentId?: string; title?: string; url?: string; index?: number },
+  );
+
+const bookmarks_update: Handler = async (params = {}) =>
+  updateBookmark(params as { id?: string; title?: string; url?: string });
+
+const bookmarks_move: Handler = async (params = {}) =>
+  moveBookmark(params as { id?: string; parentId?: string; index?: number });
+
+const bookmarks_remove: Handler = async (params = {}) =>
+  removeBookmark(params as { id?: string; recursive?: boolean });
+
+// ---------------------------------------------------------------------------
 // Public dispatch table
 // ---------------------------------------------------------------------------
 
@@ -870,4 +898,10 @@ export const HANDLERS: Record<string, Handler> = {
   "userscript.remove": userscript_remove,
   "userscript.setEnabled": userscript_set_enabled,
   "userscript.run": userscript_run,
+  // Bookmark methods
+  "bookmarks.list": bookmarks_list,
+  "bookmarks.create": bookmarks_create,
+  "bookmarks.update": bookmarks_update,
+  "bookmarks.move": bookmarks_move,
+  "bookmarks.remove": bookmarks_remove,
 };

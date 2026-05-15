@@ -28,6 +28,7 @@ import { Label } from "~components/ui/label";
 import { ScrollArea } from "~components/ui/scroll-area";
 import { Separator } from "~components/ui/separator";
 
+import { useT } from "~lib/i18n";
 import { useResolvedTheme } from "~lib/theme";
 import type { UserScript } from "~lib/types";
 
@@ -93,6 +94,7 @@ function mainTabFromLocation(): MainTab {
 
 export default function Options() {
   useResolvedTheme();
+  const { t } = useT();
 
   const [mainTab, setMainTab] = useState<MainTab>(() => mainTabFromLocation());
 
@@ -142,7 +144,7 @@ export default function Options() {
   }
 
   async function onRemove(id: string) {
-    if (!confirm("Remove this userscript? This action can't be undone.")) return;
+    if (!confirm(t("options.scripts.removeConfirm"))) return;
     await chrome.runtime.sendMessage({ action: "userscript.remove", id });
     void refresh();
   }
@@ -219,9 +221,9 @@ export default function Options() {
           <HermesLogo size={32} className="shrink-0" />
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold leading-tight">
-              Hermes
+              {t("app.title")}
             </p>
-            <p className="text-[10px] text-muted-foreground">Extension console</p>
+            <p className="text-[10px] text-muted-foreground">{t("app.subtitle")}</p>
           </div>
         </div>
         <ScrollArea className="min-h-0 flex-1">
@@ -233,7 +235,7 @@ export default function Options() {
               onClick={() => onMainTabChange("preference")}
             >
               <Palette className="h-4 w-4 shrink-0 opacity-70" />
-              Preference
+              {t("options.nav.preference")}
             </Button>
             <Button
               type="button"
@@ -242,7 +244,7 @@ export default function Options() {
               onClick={() => onMainTabChange("scripts")}
             >
               <Code2 className="h-4 w-4 shrink-0 opacity-70" />
-              Userscripts
+              {t("options.nav.scripts")}
             </Button>
             <Separator className="my-1.5" />
             <Button
@@ -252,7 +254,7 @@ export default function Options() {
               onClick={() => onMainTabChange("gateway")}
             >
               <RadioTower className="h-4 w-4 shrink-0 opacity-70" />
-              Gateway
+              {t("options.nav.gateway")}
             </Button>
             <Button
               type="button"
@@ -261,7 +263,7 @@ export default function Options() {
               onClick={() => onMainTabChange("models")}
             >
               <Bot className="h-4 w-4 shrink-0 opacity-70" />
-              Models
+              {t("options.nav.models")}
             </Button>
             <Button
               type="button"
@@ -270,7 +272,7 @@ export default function Options() {
               onClick={() => onMainTabChange("skills")}
             >
               <Sparkles className="h-4 w-4 shrink-0 opacity-70" />
-              Skills
+              {t("options.nav.skills")}
             </Button>
             <Button
               type="button"
@@ -279,7 +281,7 @@ export default function Options() {
               onClick={() => onMainTabChange("memory")}
             >
               <BrainCircuit className="h-4 w-4 shrink-0 opacity-70" />
-              Memory
+              {t("options.nav.memory")}
             </Button>
             <Button
               type="button"
@@ -288,7 +290,7 @@ export default function Options() {
               onClick={() => onMainTabChange("cron")}
             >
               <Clock className="h-4 w-4 shrink-0 opacity-70" />
-              Cron
+              {t("options.nav.cron")}
             </Button>
           </nav>
         </ScrollArea>
@@ -315,10 +317,10 @@ export default function Options() {
                 >
                   <div className="flex min-w-0 flex-col justify-center gap-0.5 leading-tight">
                     <h2 className="text-sm font-semibold tracking-tight">
-                      Userscripts
+                      {t("options.scripts.title")}
                     </h2>
                     <p className="truncate text-[11px] text-muted-foreground">
-                      Create, install, and manage userscripts
+                      {t("options.scripts.subtitle")}
                     </p>
                   </div>
                 </header>
@@ -327,7 +329,7 @@ export default function Options() {
                     <div className="flex flex-wrap items-center gap-2">
                       <Button onClick={() => setCreating(true)} disabled={busy}>
                         <FilePlus2 className="mr-1" />
-                        New script
+                        {t("options.scripts.new")}
                       </Button>
                       <Button
                         variant="outline"
@@ -335,7 +337,7 @@ export default function Options() {
                         disabled={busy}
                       >
                         <Globe className="mr-1" />
-                        Install from URL
+                        {t("options.scripts.installFromUrl")}
                       </Button>
                       <Button
                         variant="ghost"
@@ -343,7 +345,7 @@ export default function Options() {
                         disabled={busy}
                       >
                         <RefreshCw className="mr-1" />
-                        Refresh
+                        {t("common.refresh")}
                       </Button>
                       {error && (
                         <span className="text-xs text-destructive">{error}</span>
@@ -352,7 +354,9 @@ export default function Options() {
 
                     {editing ? (
                       <ScriptEditor
-                        title={`Edit: ${editing.meta.name}`}
+                        title={t("options.scripts.editor.editTitle", {
+                          name: editing.meta.name,
+                        })}
                         initialSource={editing.source}
                         onSave={onSaveEdit}
                         onCancel={() => setEditing(null)}
@@ -360,7 +364,7 @@ export default function Options() {
                       />
                     ) : creating ? (
                       <ScriptEditor
-                        title="New userscript"
+                        title={t("options.scripts.editor.newTitle")}
                         initialSource=""
                         onSave={onCreateNew}
                         onCancel={() => setCreating(false)}
@@ -395,10 +399,10 @@ export default function Options() {
                 >
                   <div className="flex min-w-0 flex-col justify-center gap-0.5 leading-tight">
                     <h2 className="text-sm font-semibold tracking-tight">
-                      Preference
+                      {t("options.preference.title")}
                     </h2>
                     <p className="truncate text-[11px] text-muted-foreground">
-                      Extension UI and behavior (unrelated to Gateway / Models)
+                      {t("options.preference.subtitle")}
                     </p>
                   </div>
                 </header>
@@ -415,13 +419,13 @@ export default function Options() {
                 >
                   <div className="flex min-w-0 flex-col justify-center gap-0.5 leading-tight">
                     <h2 className="text-sm font-semibold tracking-tight">
-                      Gateway
+                      {t("options.gateway.title")}
                     </h2>
                     <p
                       className="truncate text-[11px] text-muted-foreground"
-                      title="Side panel chat → hermes-agent-gateway (OpenAI-compatible HTTP)"
+                      title={t("options.gateway.subtitle.tooltip")}
                     >
-                      Side panel chat → hermes-agent-gateway
+                      {t("options.gateway.subtitle")}
                     </p>
                   </div>
                 </header>
@@ -439,10 +443,10 @@ export default function Options() {
       <Dialog open={installOpen} onOpenChange={setInstallOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Install userscript from URL</DialogTitle>
+            <DialogTitle>{t("options.scripts.installDialog.title")}</DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
-            <Label htmlFor="installUrl">Script URL</Label>
+            <Label htmlFor="installUrl">{t("options.scripts.installDialog.label")}</Label>
             <Input
               id="installUrl"
               value={installUrl}
@@ -459,10 +463,10 @@ export default function Options() {
               onClick={() => setInstallOpen(false)}
               disabled={busy}
             >
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button onClick={() => void onInstallFromUrl()} disabled={busy}>
-              {busy ? "Installing…" : "Install"}
+              {busy ? t("common.installing") : t("options.scripts.installDialog.install")}
             </Button>
           </DialogFooter>
         </DialogContent>

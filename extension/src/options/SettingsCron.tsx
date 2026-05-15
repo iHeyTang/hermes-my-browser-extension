@@ -46,6 +46,7 @@ import {
   type HermesCronState,
   type HermesCronUpdateInput,
 } from "~lib/hermes-cron";
+import { useT } from "~lib/i18n";
 import { cn } from "~lib/utils";
 
 import { OPTIONS_SHELL_HEADER_ROW } from "./optionsPageChrome";
@@ -162,7 +163,13 @@ interface JobFormState {
   name: string;
   prompt: string;
   schedule: string;
-  deliver: "local" | "origin";
+  // `deliver` is intentionally NOT on the form. New jobs created from
+  // this page have no chat origin, so Hermes core defaults `deliver` to
+  // `"local"` (= no channel push, file-only — the new-tab page reads
+  // those files via the bridge). Updates from this form never send
+  // `deliver`, so a value the user set via conversation (e.g. `"feishu"`)
+  // is preserved. To configure delivery, ask Hermes — the upstream
+  // `cronjob` tool's `action=update` accepts any deliver token.
   noAgent: boolean;
   script: string;
   repeat: string;
@@ -176,7 +183,6 @@ function emptyForm(): JobFormState {
     name: "",
     prompt: "",
     schedule: "",
-    deliver: "local",
     noAgent: false,
     script: "",
     repeat: "",
@@ -191,7 +197,6 @@ function jobToForm(job: HermesCronJob): JobFormState {
     name: job.name ?? "",
     prompt: job.prompt ?? "",
     schedule: job.schedule_display ?? job.schedule?.display ?? "",
-    deliver: job.deliver === "origin" ? "origin" : "local",
     noAgent: !!job.no_agent,
     script: job.script ?? "",
     repeat:
@@ -232,9 +237,13 @@ function buildCreateInput(form: JobFormState): HermesCronCreateInput | string {
     repeat = n;
   }
 
+  // Note: `deliver` is intentionally omitted. Hermes core will default it
+  // — for a job created without an `origin` (which is always the case
+  // from this options page), the default is `"local"` (no channel push,
+  // file-only — the new-tab page reads those files). Users who want
+  // channel push set it via chat.
   const input: HermesCronCreateInput = {
     schedule,
-    deliver: form.deliver,
     no_agent: noAgent,
   };
   if (prompt) input.prompt = prompt;
@@ -251,9 +260,12 @@ function buildCreateInput(form: JobFormState): HermesCronCreateInput | string {
 function buildUpdateInput(form: JobFormState): HermesCronUpdateInput | string {
   const created = buildCreateInput(form);
   if (typeof created === "string") return created;
+  // `deliver` is deliberately not sent — the bridge's `update_job_response`
+  // only patches fields present in the payload, so a value the user has
+  // configured via chat (e.g. `"feishu"`, `"all"`, …) is preserved
+  // through an options-page edit.
   const update: HermesCronUpdateInput = {
     schedule: created.schedule,
-    deliver: created.deliver,
     no_agent: created.no_agent,
     name: created.name ?? "",
     prompt: created.prompt ?? "",
@@ -386,28 +398,11 @@ function JobDialog({
               />
             </div>
 
-            <div className="flex flex-wrap items-center gap-4 rounded border border-border/60 bg-muted/20 px-3 py-2">
-              <div className="flex items-center gap-2">
-                <Label htmlFor="cron-deliver" className="text-xs">
-                  Delivery
-                </Label>
-                <select
-                  id="cron-deliver"
-                  value={form.deliver}
-                  onChange={(e) =>
-                    patch("deliver", e.target.value as "local" | "origin")
-                  }
-                  disabled={busy}
-                  className="h-7 rounded border border-border bg-background px-2 text-xs"
-                >
-                  <option value="local">local (write to disk only)</option>
-                  <option value="origin">origin (post back to source chat)</option>
-                </select>
-              </div>
+            <div className="flex justify-end">
               <button
                 type="button"
                 onClick={() => setAdvancedOpen((v) => !v)}
-                className="ml-auto text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+                className="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
               >
                 {advancedOpen ? "Hide advanced" : "Show advanced"}
               </button>
@@ -623,7 +618,10 @@ function JobRow({
             no_agent
           </Badge>
         )}
-        {job.deliver !== "local" && (
+        {job.deliver !== "local" && job.deliver !== "inbox" && (
+          // "local" / "inbox" both mean "file-only" (the default — every
+          // run lands in the new-tab feed regardless), so we don't surface
+          // a chip for them. Only render when there's a real channel push.
           <Badge
             variant="outline"
             className="h-4 px-1 text-[9px] leading-none"
@@ -757,6 +755,7 @@ function JobRow({
 }
 
 export function SettingsCron() {
+  const { t } = useT();
   const [jobs, setJobs] = useState<HermesCronJob[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -916,10 +915,10 @@ export function SettingsCron() {
       >
         <div className="flex min-w-0 flex-col justify-center gap-0.5 leading-tight">
           <h2 className="text-sm font-semibold tracking-tight text-foreground">
-            Cron
+            {t("options.cron.title")}
           </h2>
           <p className="truncate text-[11px] text-muted-foreground">
-            Hermes Agent scheduled jobs ({jobs.length} total)
+            {t("options.cron.subtitle", { count: jobs.length })}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -936,7 +935,7 @@ export function SettingsCron() {
             ) : (
               <RefreshCw className="h-3.5 w-3.5" />
             )}
-            Refresh
+            {t("options.cron.refresh")}
           </Button>
           <Button
             type="button"
@@ -945,7 +944,7 @@ export function SettingsCron() {
             onClick={() => setCreating(true)}
           >
             <Plus className="h-3.5 w-3.5" />
-            New job
+            {t("options.cron.newJob")}
           </Button>
         </div>
       </header>

@@ -3,6 +3,7 @@ import { Pencil, Trash2 } from "lucide-react";
 import { Badge } from "~components/ui/badge";
 import { Button } from "~components/ui/button";
 import { Switch } from "~components/ui/switch";
+import { useT } from "~lib/i18n";
 
 interface ListItem {
   id: string;
@@ -20,11 +21,11 @@ interface Props {
 }
 
 export function ScriptList({ scripts, onEdit, onRemove, onToggle }: Props) {
+  const { t } = useT();
   if (!scripts.length) {
     return (
       <div className="rounded-lg bg-muted/25 p-8 text-center text-sm text-muted-foreground">
-        No userscripts installed yet. Use the buttons above to create or
-        import one.
+        {t("options.scripts.empty")}
       </div>
     );
   }
@@ -52,14 +53,14 @@ export function ScriptList({ scripts, onEdit, onRemove, onToggle }: Props) {
               </Badge>
               {s.lastError && (
                 <Badge variant="destructive" title={s.lastError}>
-                  error
+                  {t("options.scripts.errorBadge")}
                 </Badge>
               )}
             </div>
             <div className="mt-1 truncate font-mono text-xs text-muted-foreground">
               {s.meta.match.length
                 ? s.meta.match.join(" • ")
-                : "(no @match)"}
+                : t("options.scripts.noMatch")}
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -67,7 +68,7 @@ export function ScriptList({ scripts, onEdit, onRemove, onToggle }: Props) {
               size="icon"
               variant="ghost"
               onClick={() => onEdit(s.id)}
-              title="Edit"
+              title={t("options.scripts.action.edit")}
             >
               <Pencil />
             </Button>
@@ -75,7 +76,7 @@ export function ScriptList({ scripts, onEdit, onRemove, onToggle }: Props) {
               size="icon"
               variant="ghost"
               onClick={() => onRemove(s.id)}
-              title="Remove"
+              title={t("options.scripts.action.remove")}
             >
               <Trash2 />
             </Button>

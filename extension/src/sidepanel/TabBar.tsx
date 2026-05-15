@@ -2,8 +2,9 @@ import { History, Plus, Settings as SettingsIcon, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "~components/ui/button";
-import { cn } from "~lib/utils";
+import { useT } from "~lib/i18n";
 import type { SessionMeta } from "~lib/sessions/types";
+import { cn } from "~lib/utils";
 
 interface Props {
   tabs: SessionMeta[];
@@ -52,6 +53,7 @@ export function TabBar({
   onOpenHistory,
   onOpenSettings,
 }: Props) {
+  const { t } = useT();
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
 
@@ -113,19 +115,21 @@ export function TabBar({
         >
           {tabs.length === 0 ? (
             <div className="flex flex-1 items-center px-3 text-xs italic text-muted-foreground">
-              No open sessions — tap{" "}
+              {t("sidepanel.tabbar.empty.before")}{" "}
               <Plus className="mx-1 inline h-3 w-3" />
-              or pick one from History
+              {t("sidepanel.tabbar.empty.after")}
             </div>
           ) : (
-            tabs.map((t) => (
+            tabs.map((tab) => (
               <Tab
-                key={t.id}
-                session={t}
-                active={t.id === activeId}
-                onActivate={() => onActivate(t.id)}
-                onClose={() => onClose(t.id)}
-                onContextMenu={(x, y) => setMenu({ x, y, sessionId: t.id })}
+                key={tab.id}
+                session={tab}
+                active={tab.id === activeId}
+                onActivate={() => onActivate(tab.id)}
+                onClose={() => onClose(tab.id)}
+                onContextMenu={(x, y) =>
+                  setMenu({ x, y, sessionId: tab.id })
+                }
               />
             ))
           )}
@@ -137,7 +141,7 @@ export function TabBar({
             variant="ghost"
             className="h-6 w-6 [&_svg]:size-3.5"
             onClick={onNew}
-            title="New chat"
+            title={t("sidepanel.tabbar.button.new")}
           >
             <Plus />
           </Button>
@@ -146,7 +150,7 @@ export function TabBar({
             variant="ghost"
             className="h-6 w-6 [&_svg]:size-3.5"
             onClick={onOpenHistory}
-            title="History"
+            title={t("sidepanel.tabbar.button.history")}
           >
             <History />
           </Button>
@@ -155,7 +159,7 @@ export function TabBar({
             variant="ghost"
             className="h-6 w-6 [&_svg]:size-3.5"
             onClick={onOpenSettings}
-            title="Settings"
+            title={t("sidepanel.tabbar.button.settings")}
           >
             <SettingsIcon />
           </Button>
@@ -169,22 +173,22 @@ export function TabBar({
           onDismiss={() => setMenu(null)}
           items={[
             {
-              label: "Close",
+              label: t("sidepanel.tabbar.menu.close"),
               onClick: () => onClose(menu.sessionId),
             },
             {
-              label: "Close others",
+              label: t("sidepanel.tabbar.menu.closeOthers"),
               disabled: idsExceptMenu.length === 0,
               onClick: () => onCloseMany(idsExceptMenu),
             },
             {
-              label: "Close to the right",
+              label: t("sidepanel.tabbar.menu.closeRight"),
               disabled: idsToTheRight.length === 0,
               onClick: () => onCloseMany(idsToTheRight),
             },
             { separator: true },
             {
-              label: "Close all",
+              label: t("sidepanel.tabbar.menu.closeAll"),
               disabled: ids.length === 0,
               onClick: () => onCloseMany(ids),
             },
@@ -210,7 +214,8 @@ function Tab({
   onClose,
   onContextMenu,
 }: TabProps) {
-  const title = session.title || "New chat";
+  const { t } = useT();
+  const title = session.title || t("sidepanel.tabbar.button.new");
   return (
     <div
       data-session-id={session.id}
@@ -241,8 +246,8 @@ function Tab({
           e.stopPropagation();
           onClose();
         }}
-        title="Close tab (session is kept in History)"
-        aria-label="Close tab"
+        title={t("sidepanel.tabbar.tab.close")}
+        aria-label={t("sidepanel.tabbar.tab.closeAria")}
         className={cn(
           "ml-1 rounded p-0.5 transition-opacity hover:bg-foreground/10",
           active ? "opacity-70 hover:opacity-100" : "opacity-0 group-hover:opacity-100",

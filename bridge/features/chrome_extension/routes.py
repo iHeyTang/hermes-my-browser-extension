@@ -4,11 +4,11 @@ from urllib.parse import unquote
 
 from aiohttp import web
 
-from ..services.attachment_service import (
+from ...common import json_error
+from .attachment_service import (
     MAX_ATTACHMENT_BYTES,
     build_attachment_upload_response,
 )
-from .common import json_error
 
 
 async def handle_attach_upload(request: web.Request) -> web.Response:
@@ -38,7 +38,7 @@ def max_client_size_bytes() -> int:
     return MAX_ATTACHMENT_BYTES
 
 
-def register_misc_routes(app: web.Application) -> None:
+def register(app: web.Application) -> None:
     app.add_routes(
         [
             web.post("/attach", handle_attach_upload),

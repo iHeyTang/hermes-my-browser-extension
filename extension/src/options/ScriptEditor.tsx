@@ -6,6 +6,7 @@ import { defaultKeymap } from "@codemirror/commands";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "~components/ui/button";
+import { useT } from "~lib/i18n";
 import { useDocumentTheme } from "~lib/theme";
 
 interface Props {
@@ -84,6 +85,7 @@ export function ScriptEditor({
   const themeCompartmentRef = useRef<Compartment>(new Compartment());
   const [error, setError] = useState<string | null>(null);
   const documentTheme = useDocumentTheme();
+  const { t } = useT();
 
   useEffect(() => {
     if (!ref.current) return;
@@ -142,16 +144,18 @@ export function ScriptEditor({
   return (
     <div className="flex h-full flex-col gap-3">
       <div className="flex items-center gap-2">
-        <h2 className="text-sm font-semibold">{title || "Edit userscript"}</h2>
+        <h2 className="text-sm font-semibold">
+          {title || t("options.scripts.editor.editTitle", { name: "" })}
+        </h2>
         <div className="ml-auto flex items-center gap-2">
           {error && (
             <span className="text-xs text-destructive">{error}</span>
           )}
           <Button variant="outline" onClick={onCancel} disabled={busy}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button onClick={save} disabled={busy}>
-            {busy ? "Saving…" : "Save"}
+            {busy ? t("common.saving") : t("common.save")}
           </Button>
         </div>
       </div>

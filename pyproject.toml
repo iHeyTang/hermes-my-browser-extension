@@ -29,7 +29,11 @@ packages = [
     "hermes_my_browser_extension",
     "hermes_my_browser_extension.bridge",
     "hermes_my_browser_extension.bridge.adapters",
-    "hermes_my_browser_extension.bridge.routes",
-    "hermes_my_browser_extension.bridge.services",
+    "hermes_my_browser_extension.bridge.features",
+    "hermes_my_browser_extension.bridge.features.chrome_extension",
+    "hermes_my_browser_extension.bridge.features.cron",
+    "hermes_my_browser_extension.bridge.features.hermes_settings",
+    "hermes_my_browser_extension.bridge.features.inbox",
+    "hermes_my_browser_extension.bridge.features.lark",
 ]
 include-package-data = true

@@ -78,6 +78,7 @@ import {
   hostnameOf,
   useActiveTab,
 } from "~lib/page-context/use-active-tab";
+import { useT, type TranslateFn } from "~lib/i18n";
 import { useSessions } from "~lib/sessions/use-sessions";
 import { useResolvedTheme } from "~lib/theme";
 import type { ChatMessage, NavigateOpenPolicy } from "~lib/types";
@@ -281,6 +282,7 @@ export default function SidePanel({
   // active page". Other preferences (`auto`/`light`/`dark`) behave the same
   // as in the popup/options.
   useResolvedTheme();
+  const { t } = useT();
 
   const sessions = useSessions();
 
@@ -1068,7 +1070,7 @@ export default function SidePanel({
         tabId: tab.id,
       })) as { ok?: boolean; error?: string };
       if (!r?.ok) {
-        setPageError(r?.error || "Failed to start recording");
+        setPageError(r?.error || t("sidepanel.permission.failedRecordStart"));
         return;
       }
       await refreshLearnStatus();
@@ -1091,7 +1093,7 @@ export default function SidePanel({
         "Stop-recording request timed out (the extension background may be asleep)",
       )) as { ok?: boolean; trace?: unknown; error?: string };
       if (!r?.ok) {
-        setPageError(r?.error || "Failed to stop recording");
+        setPageError(r?.error || t("sidepanel.permission.failedRecordStop"));
         return;
       }
       if (!r.trace) {
@@ -2414,16 +2416,16 @@ export default function SidePanel({
                   size="sm"
                   className="h-6 gap-1 px-2 text-[11px]"
                   disabled={attachmentUploading}
-                  title="Record clicks and input on the active tab; the trace JSON will be attached to the conversation when you stop. Write your prompt yourself."
+                  title={t("sidepanel.learn.tooltip")}
                   onClick={() => void startLearnFromPanel()}
                 >
                   <Disc className="h-3 w-3 shrink-0" />
-                  Record actions
+                  {t("sidepanel.learn.record")}
                 </Button>
               ) : (
                 <>
                   <span className="max-w-[10rem] truncate text-[11px] text-muted-foreground">
-                    Recording · {learnEventCount} steps
+                    {t("sidepanel.learn.recording", { count: learnEventCount })}
                   </span>
                   <Button
                     type="button"
@@ -2432,7 +2434,9 @@ export default function SidePanel({
                     disabled={learnStopBusy || attachmentUploading}
                     onClick={() => void stopLearnToComposer()}
                   >
-                    {learnStopBusy ? "Processing…" : "Stop and attach"}
+                    {learnStopBusy
+                      ? t("sidepanel.learn.processing")
+                      : t("sidepanel.learn.stop")}
                   </Button>
                 </>
               )}
@@ -2521,7 +2525,7 @@ export default function SidePanel({
                         )}
                         title={
                           isEditing
-                            ? "This message is being edited in the composer"
+                            ? t("sidepanel.queue.editing")
                             : previewPendingTurn(item)
                         }
                       >
@@ -2531,8 +2535,8 @@ export default function SidePanel({
                         <button
                           type="button"
                           onClick={() => sendQueueItemNow(item.queueId)}
-                          title="Send now: jump this message to the front of the queue"
-                          aria-label="Send now"
+                          title={t("sidepanel.queue.sendNow")}
+                          aria-label={t("sidepanel.queue.sendNow.aria")}
                           className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
                         >
                           <Send className="h-3.5 w-3.5" />
@@ -2540,8 +2544,8 @@ export default function SidePanel({
                         <button
                           type="button"
                           onClick={() => editPendingQueueItem(item.queueId)}
-                          title="Edit: load this message into the composer (keeps queue position, pauses the queue)"
-                          aria-label="Edit"
+                          title={t("sidepanel.queue.edit")}
+                          aria-label={t("sidepanel.queue.edit.aria")}
                           disabled={isEditing}
                           className={cn(
                             "rounded p-1 transition-colors",
@@ -2555,8 +2559,8 @@ export default function SidePanel({
                         <button
                           type="button"
                           onClick={() => removePendingQueueItem(item.queueId)}
-                          title="Delete"
-                          aria-label="Delete"
+                          title={t("sidepanel.queue.delete")}
+                          aria-label={t("sidepanel.queue.delete")}
                           className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -2581,13 +2585,13 @@ export default function SidePanel({
             // explanation; cancel button is the small ✕.
             <div className="flex items-center gap-1 px-2 pt-1 text-[10px] text-muted-foreground/70">
               <Pencil className="h-2.5 w-2.5" />
-              <span>Editing</span>
+              <span>{t("sidepanel.queue.edit.aria")}</span>
               <button
                 type="button"
                 onClick={cancelQueueEdit}
-                title="Cancel edit (discards composer changes; the queued item is unchanged)"
+                title={t("sidepanel.composer.cancelEdit")}
                 className="rounded p-0.5 transition-colors hover:bg-muted hover:text-foreground"
-                aria-label="Cancel edit"
+                aria-label={t("sidepanel.composer.cancelEdit.aria")}
               >
                 <X className="h-2.5 w-2.5" />
               </button>
@@ -2629,12 +2633,12 @@ export default function SidePanel({
             onChange={(e) => setInput(e.target.value)}
             placeholder={
               attachmentUploading
-                ? "Waiting for attachment upload to finish…"
+                ? t("sidepanel.placeholder.uploading")
                 : attachments.length > 0
-                  ? "Add a question about your file(s)…"
+                  ? t("sidepanel.placeholder.withAttachments")
                   : pinnedPages.length > 0
-                    ? "Ask about the attached page(s)…"
-                    : "Message Hermes…"
+                    ? t("sidepanel.placeholder.withPinned")
+                    : t("sidepanel.placeholder")
             }
             rows={2}
             style={{ maxHeight: COMPOSER_TEXTAREA_MAX_PX }}
@@ -2663,8 +2667,8 @@ export default function SidePanel({
                 type="button"
                 onClick={() => void openFilePicker()}
                 disabled={attachmentBusy || attachmentUploading}
-                title="Attach files (multi-select supported)"
-                aria-label="Attach files"
+                title={t("sidepanel.attach.tooltip")}
+                aria-label={t("sidepanel.attach")}
                 className={cn(
                   "inline-flex h-6 w-6 items-center justify-center rounded-full border border-border bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
                   (attachmentBusy || attachmentUploading) &&
@@ -2686,15 +2690,15 @@ export default function SidePanel({
                 aria-pressed={isCurrentPagePinned}
                 aria-label={
                   isCurrentPagePinned
-                    ? "Unpin current page"
-                    : "Attach current page to next message"
+                    ? t("sidepanel.pin.unpinAria")
+                    : t("sidepanel.pin.pinAria")
                 }
                 title={
                   pageRestrictedReason && !isCurrentPagePinned
                     ? pageRestrictedReason
                     : isCurrentPagePinned
-                      ? "Detach this page from the next message"
-                      : "Attach the current page to the next message (one-shot snapshot)"
+                      ? t("sidepanel.pin.unpinTooltip")
+                      : t("sidepanel.pin.pinTooltip")
                 }
                 className={cn(
                   "inline-flex h-6 cursor-pointer select-none items-center gap-1 rounded-full border px-2 text-[11px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
@@ -2711,7 +2715,7 @@ export default function SidePanel({
                   className="h-3 w-3"
                   fill={isCurrentPagePinned ? "currentColor" : "none"}
                 />
-                <span>Pin</span>
+                <span>{t("sidepanel.pin")}</span>
               </button>
               <NavigateOpenPolicyToggle
                 policy={navigateOpenPolicy}
@@ -2721,7 +2725,7 @@ export default function SidePanel({
                 type="button"
                 onClick={() => setShowStreamDetails((v) => !v)}
                 aria-pressed={showStreamDetails}
-                title="Show the agent's reasoning and tool-call trace in assistant bubbles (when the model doesn't emit reasoning, only tool calls are shown)"
+                title={t("sidepanel.streamDetails.tooltip")}
                 className={cn(
                   // Mirror Pin's pattern (and its lightweight active
                   // styling): outlined when off, translucent foreground
@@ -2734,7 +2738,7 @@ export default function SidePanel({
                 )}
               >
                 <Brain className="h-3 w-3" />
-                <span>Thoughts</span>
+                <span>{t("sidepanel.streamDetails")}</span>
               </button>
               </div>
             </div>
@@ -2744,7 +2748,7 @@ export default function SidePanel({
                   size="icon"
                   onClick={() => void send()}
                   disabled={attachmentUploading || attachmentBusy}
-                  title="Queue: send after the current turn finishes"
+                  title={t("sidepanel.queue.tooltip")}
                   className="h-6 w-6 shrink-0 rounded-full [&_svg]:size-3"
                 >
                   <ArrowUp strokeWidth={3} />
@@ -2754,8 +2758,8 @@ export default function SidePanel({
                   type="button"
                   size="icon"
                   onClick={stop}
-                  title="Stop generation"
-                  aria-label="Stop generation"
+                  title={t("sidepanel.stop")}
+                  aria-label={t("sidepanel.stop")}
                   className="h-6 w-6 shrink-0 rounded-full"
                 >
                   <span
@@ -2774,7 +2778,7 @@ export default function SidePanel({
                   attachmentUploading ||
                   attachmentBusy
                 }
-                title="Send (⌘/Ctrl+Enter)"
+                title={t("sidepanel.send.tooltip")}
                 className="h-6 w-6 shrink-0 rounded-full [&_svg]:size-3"
               >
                 <ArrowUp strokeWidth={3} />
@@ -2811,26 +2815,27 @@ interface EmptyStateProps {
 }
 
 function EmptyState({ onNew, onOpenHistory, hasHistory }: EmptyStateProps) {
+  const { t } = useT();
   return (
     <div className="flex flex-col items-center justify-center gap-4 px-6 py-12 text-center">
       <HermesLogo size={112} />
       <div className="space-y-1">
-        <p className="text-sm font-medium">No conversation open</p>
+        <p className="text-sm font-medium">{t("sidepanel.empty.title")}</p>
         <p className="text-xs text-muted-foreground">
           {hasHistory
-            ? "Start a new chat or pick one up from History."
-            : "Start your first chat with Hermes."}
+            ? t("sidepanel.empty.withHistory")
+            : t("sidepanel.empty.firstChat")}
         </p>
       </div>
       <div className="flex flex-col gap-2">
         <Button onClick={onNew}>
           <Plus className="mr-1" />
-          New chat
+          {t("sidepanel.empty.newChat")}
         </Button>
         {hasHistory && (
           <Button variant="outline" onClick={onOpenHistory}>
             <History className="mr-1" />
-            Open from History
+            {t("sidepanel.empty.openHistory")}
           </Button>
         )}
       </div>
@@ -2845,6 +2850,7 @@ interface ErrorBlockProps {
 }
 
 function ErrorBlock({ error, onOpenSettings, onRefreshCors }: ErrorBlockProps) {
+  const { t } = useT();
   return (
     <div className="w-full max-w-sm rounded-md border border-destructive/50 bg-destructive/10 p-3 text-left text-xs text-destructive">
       <div className="break-all font-mono">{error.message}</div>
@@ -2858,14 +2864,14 @@ function ErrorBlock({ error, onOpenSettings, onRefreshCors }: ErrorBlockProps) {
           onClick={onOpenSettings}
           className="inline-flex items-center gap-1 rounded border border-foreground/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-foreground hover:bg-foreground/10"
         >
-          Settings
+          {t("sidepanel.empty.settings")}
         </button>
         <button
           onClick={onRefreshCors}
           className="inline-flex items-center gap-1 rounded border border-foreground/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-foreground hover:bg-foreground/10"
-          title="Re-install the Origin-stripping rule"
+          title={t("sidepanel.cors.reinstall")}
         >
-          Reset CORS rule
+          {t("sidepanel.cors.reset")}
         </button>
       </div>
     </div>
@@ -2889,6 +2895,7 @@ interface AgentDestinationChipProps {
  * accidentally pop a tab inside the agent window.
  */
 function AgentDestinationChip({ url, title }: AgentDestinationChipProps) {
+  const { t } = useT();
   const display = title || hostnameOf(url) || url;
   async function open() {
     try {
@@ -2919,7 +2926,7 @@ function AgentDestinationChip({ url, title }: AgentDestinationChipProps) {
     <button
       type="button"
       onClick={() => void open()}
-      title={`Open ${display} in your browser`}
+      title={t("sidepanel.attachment.openInBrowser", { name: display })}
       className="mt-2 inline-flex max-w-full items-center gap-1 rounded-full border border-border/60 bg-background/70 px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
     >
       <ExternalLink className="h-2.5 w-2.5 shrink-0" />
@@ -2946,6 +2953,7 @@ function PageChip({
   live,
   onRemove,
 }: PageChipProps) {
+  const { t } = useT();
   const host = hostnameOf(url);
   const display = title || host || "page";
   return (
@@ -2976,8 +2984,8 @@ function PageChip({
           type="button"
           onClick={onRemove}
           className="-mr-0.5 ml-0.5 rounded-full p-0.5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-          title="Remove"
-          aria-label="Remove attached page"
+          title={t("sidepanel.attachment.remove")}
+          aria-label={t("sidepanel.attachment.removePage")}
         >
           <X className="h-2.5 w-2.5" />
         </button>
@@ -2999,9 +3007,10 @@ interface AttachmentChipProps {
  * where the file landed.
  */
 function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
+  const { t } = useT();
   const sizeLabel = formatBytesShort(attachment.size);
   const titleLines: string[] = [];
-  if (attachment.uploading) titleLines.push("Uploading…");
+  if (attachment.uploading) titleLines.push(t("common.loading"));
   titleLines.push(attachment.name);
   titleLines.push(`${attachment.kind} • ${sizeLabel}`);
   if (attachment.mime) titleLines.push(attachment.mime);
@@ -3023,7 +3032,7 @@ function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
         <span className="ml-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted/60">
           <Loader2
             className="h-3.5 w-3.5 animate-spin text-foreground"
-            aria-label="Uploading"
+            aria-label={t("sidepanel.attachment.uploading")}
           />
         </span>
       ) : attachment.kind === "image" && attachment.thumbDataUrl ? (
@@ -3038,13 +3047,19 @@ function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
         </span>
       )}
       <span className="truncate">
-        {attachment.uploading ? "Uploading · " : ""}
+        {attachment.uploading
+          ? `${t("sidepanel.attachment.uploading")} · `
+          : ""}
         {attachment.name}
       </span>
       {attachment.fromPageContext && (
         <span
           className="ml-0.5 rounded-sm bg-foreground/10 px-1 text-[9px] uppercase tracking-wide text-muted-foreground"
-          title={`Auto-attached from ${attachment.sourceUrl ?? "current tab"}`}
+          title={t("sidepanel.attachment.autoFrom", {
+            source:
+              attachment.sourceUrl ??
+              t("sidepanel.attachment.autoFrom.fallback"),
+          })}
         >
           page
         </span>
@@ -3053,8 +3068,10 @@ function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
         type="button"
         onClick={onRemove}
         className="-mr-0.5 ml-0.5 rounded-full p-0.5 text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-        title="Remove"
-        aria-label={`Remove ${attachment.name}`}
+        title={t("sidepanel.attachment.remove")}
+        aria-label={t("sidepanel.attachment.removeAria", {
+          name: attachment.name,
+        })}
       >
         <X className="h-2.5 w-2.5" />
       </button>
@@ -3377,37 +3394,41 @@ function ToolProgressChips({ events }: { events: HermesToolProgress[] }) {
  *   - `always`  — persist as an approved pattern for this user
  *   - `deny`    — refuse; agent gets an error from the tool
  */
-const APPROVAL_DECISIONS: Array<{
+interface ApprovalDecisionMeta {
   value: HermesApprovalDecision;
   label: string;
   description: string;
   variant: "primary" | "muted" | "destructive";
-}> = [
-  {
-    value: "once",
-    label: "Allow once",
-    description: "Allow this time only; ask again next time",
-    variant: "primary",
-  },
-  {
-    value: "session",
-    label: "Allow this session",
-    description: "Don't ask again for the rest of this chat",
-    variant: "muted",
-  },
-  {
-    value: "always",
-    label: "Always allow",
-    description: "Remember this command; don't ask again",
-    variant: "muted",
-  },
-  {
-    value: "deny",
-    label: "Deny",
-    description: "Refuse; the agent receives an error",
-    variant: "destructive",
-  },
-];
+}
+
+function approvalDecisions(t: TranslateFn): ApprovalDecisionMeta[] {
+  return [
+    {
+      value: "once",
+      label: t("sidepanel.permission.allowOnce"),
+      description: t("sidepanel.permission.allowOnce.desc"),
+      variant: "primary",
+    },
+    {
+      value: "session",
+      label: t("sidepanel.permission.allowSession"),
+      description: t("sidepanel.permission.allowSession.desc"),
+      variant: "muted",
+    },
+    {
+      value: "always",
+      label: t("sidepanel.permission.allowAlways"),
+      description: t("sidepanel.permission.allowAlways.desc"),
+      variant: "muted",
+    },
+    {
+      value: "deny",
+      label: t("sidepanel.permission.deny"),
+      description: t("sidepanel.permission.deny.desc"),
+      variant: "destructive",
+    },
+  ];
+}
 
 function ApprovalBanner({
   approvals,
@@ -3425,6 +3446,8 @@ function ApprovalBanner({
   ) => void;
   onDismissError: () => void;
 }) {
+  const { t } = useT();
+  const decisions = approvalDecisions(t);
   return (
     <div className="relative z-[1] flex flex-col gap-2 rounded-t-lg border border-input border-b-0 bg-background px-3 py-2.5 shadow-[0_-2px_10px_-2px_rgba(0,0,0,0.12)] dark:shadow-[0_-2px_14px_-2px_rgba(0,0,0,0.45)]">
       {error && (
@@ -3434,7 +3457,7 @@ function ApprovalBanner({
             type="button"
             onClick={onDismissError}
             className="shrink-0 rounded p-0.5 hover:bg-destructive/10"
-            aria-label="Dismiss error"
+            aria-label={t("sidepanel.permission.dismissError")}
           >
             <X className="h-3 w-3" />
           </button>
@@ -3458,7 +3481,7 @@ function ApprovalBanner({
           >
             <div className="flex items-center gap-1.5 text-[11px] font-medium text-foreground">
               <Brain className="h-3 w-3 shrink-0" />
-              <span>Approval needed</span>
+              <span>{t("sidepanel.permission.approvalNeeded")}</span>
               {req.tool && (
                 <span className="font-mono text-[10px] text-muted-foreground">
                   · {req.tool}
@@ -3476,7 +3499,7 @@ function ApprovalBanner({
               </p>
             )}
             <div className="flex flex-wrap gap-1.5">
-              {APPROVAL_DECISIONS.map((d) => {
+              {decisions.map((d) => {
                 const isPending = pending === d.value;
                 const anyPending = pending != null;
                 return (
@@ -3537,47 +3560,53 @@ function ApprovalBanner({
  * color stay in sync — every outcome MUST have an entry or the chip
  * renders blank.
  */
-const APPROVAL_OUTCOME_INFO: Record<
-  ApprovalOutcome,
-  { label: string; tooltip: string; className: string }
-> = {
-  once: {
-    label: "Allowed once",
-    tooltip: "Approved for this execution only",
-    className:
-      "border-foreground/20 bg-foreground/[0.04] text-foreground",
-  },
-  session: {
-    label: "Allowed this session",
-    tooltip: "Won't ask again for the rest of this session",
-    className:
-      "border-foreground/20 bg-foreground/[0.04] text-foreground",
-  },
-  always: {
-    label: "Always allowed",
-    tooltip: "Added to the permanent allowlist (command_allowlist)",
-    className:
-      "border-foreground/20 bg-foreground/[0.04] text-foreground",
-  },
-  deny: {
-    label: "Denied",
-    tooltip: "User denied this command",
-    className:
-      "border-destructive/30 bg-destructive/5 text-destructive",
-  },
-  expired: {
-    label: "Expired",
-    tooltip:
-      "No response before gateway_timeout; the server auto-denied and unblocked",
-    className: "border-border bg-muted/40 text-muted-foreground",
-  },
-  failed: {
-    label: "Submit failed",
-    tooltip: "POST /v1/runs/{run_id}/approval request failed",
-    className:
-      "border-destructive/30 bg-destructive/5 text-destructive",
-  },
-};
+interface ApprovalOutcomeMeta {
+  label: string;
+  tooltip: string;
+  className: string;
+}
+
+function approvalOutcomeInfo(
+  t: TranslateFn,
+): Record<ApprovalOutcome, ApprovalOutcomeMeta> {
+  return {
+    once: {
+      label: t("sidepanel.permission.allowedOnce"),
+      tooltip: t("sidepanel.permission.allowedOnce.tooltip"),
+      className:
+        "border-foreground/20 bg-foreground/[0.04] text-foreground",
+    },
+    session: {
+      label: t("sidepanel.permission.allowedSession"),
+      tooltip: t("sidepanel.permission.allowedSession.tooltip"),
+      className:
+        "border-foreground/20 bg-foreground/[0.04] text-foreground",
+    },
+    always: {
+      label: t("sidepanel.permission.allowedAlways"),
+      tooltip: t("sidepanel.permission.allowedAlways.tooltip"),
+      className:
+        "border-foreground/20 bg-foreground/[0.04] text-foreground",
+    },
+    deny: {
+      label: t("sidepanel.permission.denied"),
+      tooltip: t("sidepanel.permission.denied.tooltip"),
+      className:
+        "border-destructive/30 bg-destructive/5 text-destructive",
+    },
+    expired: {
+      label: t("sidepanel.permission.expired"),
+      tooltip: t("sidepanel.permission.expired.tooltip"),
+      className: "border-border bg-muted/40 text-muted-foreground",
+    },
+    failed: {
+      label: t("sidepanel.permission.submitFailed"),
+      tooltip: t("sidepanel.permission.submitFailed.tooltip", { runId: "{run_id}" }),
+      className:
+        "border-destructive/30 bg-destructive/5 text-destructive",
+    },
+  };
+}
 
 /**
  * Single approval chip — one row showing outcome badge + truncated
@@ -3587,8 +3616,10 @@ const APPROVAL_OUTCOME_INFO: Record<
  * bubble when the verbose timeline isn't being rendered.
  */
 function ApprovalRecordChip({ record }: { record: ApprovalRecord }) {
+  const { t } = useT();
   const command = (record.command ?? "").trim();
-  const meta = record.outcome ? APPROVAL_OUTCOME_INFO[record.outcome] : null;
+  const outcomes = approvalOutcomeInfo(t);
+  const meta = record.outcome ? outcomes[record.outcome] : null;
   const tsMs = record.decidedAt ?? record.requestedAt;
   let timeLabel = "";
   try {
@@ -3601,13 +3632,28 @@ function ApprovalRecordChip({ record }: { record: ApprovalRecord }) {
     // Bad timestamp — ignore.
   }
   const tooltipBits: string[] = [];
-  if (record.tool) tooltipBits.push(`Tool: ${record.tool}`);
-  if (command) tooltipBits.push(`Command: ${command}`);
-  if (record.description) tooltipBits.push(`Reason: ${record.description}`);
+  if (record.tool)
+    tooltipBits.push(t("sidepanel.permission.chip.tool", { tool: record.tool }));
+  if (command)
+    tooltipBits.push(
+      t("sidepanel.permission.chip.command", { command }),
+    );
+  if (record.description)
+    tooltipBits.push(
+      t("sidepanel.permission.chip.reason", { reason: record.description }),
+    );
   if (meta) tooltipBits.push(meta.tooltip);
-  tooltipBits.push(`Requested: ${new Date(record.requestedAt).toLocaleString()}`);
+  tooltipBits.push(
+    t("sidepanel.permission.chip.requested", {
+      time: new Date(record.requestedAt).toLocaleString(),
+    }),
+  );
   if (record.decidedAt) {
-    tooltipBits.push(`Decided: ${new Date(record.decidedAt).toLocaleString()}`);
+    tooltipBits.push(
+      t("sidepanel.permission.chip.decided", {
+        time: new Date(record.decidedAt).toLocaleString(),
+      }),
+    );
   }
   return (
     <div
@@ -3628,7 +3674,7 @@ function ApprovalRecordChip({ record }: { record: ApprovalRecord }) {
             aria-hidden
           />
         )}
-        <span>{meta ? meta.label : "Waiting"}</span>
+        <span>{meta ? meta.label : t("sidepanel.permission.waiting")}</span>
       </span>
       {command && (
         <code className="min-w-0 flex-1 truncate font-mono text-foreground/65">

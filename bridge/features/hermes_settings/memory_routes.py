@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from ..services.memory_service import MEMORY_TARGETS, read_memory_entries_response
-from .common import json_error
+from .memory_service import MEMORY_TARGETS, read_memory_entries_response
+from ...common import json_error
 
 
 async def handle_memory_list(_request: web.Request) -> web.Response:

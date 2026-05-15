@@ -4,8 +4,9 @@
  */
 
 import { Bot, MousePointerClick, PlusSquare, Sparkles } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import { useT } from "~lib/i18n";
 import type { NavigateOpenPolicy } from "~lib/types";
 import { cn } from "~lib/utils";
 
@@ -21,44 +22,43 @@ interface PolicyMeta {
   Icon: typeof Sparkles;
 }
 
-const POLICIES: PolicyMeta[] = [
-  {
-    value: "auto",
-    label: "Auto",
-    description:
-      "Model picks via open_in on each navigate; other tools follow the active run surface (updated by navigate + this menu when not Auto).",
-    Icon: Sparkles,
-  },
-  {
-    value: "agent",
-    label: "Agent",
-    description:
-      "Dedicated agent window — all browser tools and in-place navigations.",
-    Icon: Bot,
-  },
-  {
-    value: "user_new_tab",
-    label: "New tab",
-    description:
-      "Your Chrome window — each navigate opens a new tab; other tools follow that tab.",
-    Icon: PlusSquare,
-  },
-  {
-    value: "user_same_tab",
-    label: "Same tab",
-    description:
-      "Your Chrome window — navigations and tools use the current tab.",
-    Icon: MousePointerClick,
-  },
-];
-
 export function NavigateOpenPolicyToggle({
   policy,
   onChange,
 }: NavigateOpenPolicyToggleProps) {
+  const { t } = useT();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const current = POLICIES.find((p) => p.value === policy) ?? POLICIES[0];
+  const policies = useMemo<PolicyMeta[]>(
+    () => [
+      {
+        value: "auto",
+        label: t("sidepanel.navPolicy.auto.label"),
+        description: t("sidepanel.navPolicy.auto.desc"),
+        Icon: Sparkles,
+      },
+      {
+        value: "agent",
+        label: t("sidepanel.navPolicy.agent.label"),
+        description: t("sidepanel.navPolicy.agent.desc"),
+        Icon: Bot,
+      },
+      {
+        value: "user_new_tab",
+        label: t("sidepanel.navPolicy.userNewTab.label"),
+        description: t("sidepanel.navPolicy.userNewTab.desc"),
+        Icon: PlusSquare,
+      },
+      {
+        value: "user_same_tab",
+        label: t("sidepanel.navPolicy.userSameTab.label"),
+        description: t("sidepanel.navPolicy.userSameTab.desc"),
+        Icon: MousePointerClick,
+      },
+    ],
+    [t],
+  );
+  const current = policies.find((p) => p.value === policy) ?? policies[0];
 
   useEffect(() => {
     if (!open) return;
@@ -101,10 +101,10 @@ export function NavigateOpenPolicyToggle({
       {open && (
         <div
           role="listbox"
-          aria-label="Navigate opens"
+          aria-label={t("sidepanel.navPolicy.listAria")}
           className="absolute bottom-7 left-0 z-30 w-60 overflow-hidden rounded-md border border-border bg-background text-foreground shadow-md"
         >
-          {POLICIES.map((p) => {
+          {policies.map((p) => {
             const ItemIcon = p.Icon;
             const active = p.value === policy;
             return (

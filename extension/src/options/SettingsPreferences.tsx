@@ -3,49 +3,77 @@ import { useEffect, useState } from "react";
 import { Input } from "~components/ui/input";
 import { Label } from "~components/ui/label";
 import { Switch } from "~components/ui/switch";
-import { cn } from "~lib/utils";
+import {
+  type LanguagePreference,
+  useStoredLanguagePreference,
+  useT,
+} from "~lib/i18n";
 import {
   type ThemePreference,
   useStoredThemePreference,
 } from "~lib/theme";
-
-const THEME_OPTIONS: {
-  value: ThemePreference;
-  label: string;
-  description: string;
-}[] = [
-  {
-    value: "auto",
-    label: "Follow browser",
-    description:
-      "Match the browser / OS light or dark preference (prefers-color-scheme).",
-  },
-  {
-    value: "light",
-    label: "Light",
-    description: "Always use the light theme.",
-  },
-  {
-    value: "dark",
-    label: "Dark",
-    description: "Always use the dark theme.",
-  },
-];
+import { cn } from "~lib/utils";
 
 const SHOW_STREAM_DETAILS_KEY = "settings.sidepanel.showStreamDetails";
 const NEWTAB_ENABLED_KEY = "settings.newtab.enabled";
 const NEWTAB_FALLBACK_KEY = "settings.newtab.fallbackUrl";
 
-/** Extension UI preferences (theme, etc.) — not gateway or Hermes CLI. */
+/** Extension UI preferences (theme, language, etc.) — not gateway or Hermes CLI. */
 export function SettingsPreferences() {
+  const { t } = useT();
   const [themePref, setThemePref] = useStoredThemePreference();
+  const [langPref, setLangPref] = useStoredLanguagePreference();
   const [showStreamDetails, setShowStreamDetails] = useState(false);
   // Mirrors `NEWTAB_DEFAULT_ENABLED` in src/newtab/index.tsx — both files
   // need the same default so a fresh install shows the same state in the
   // toggle and the actual newtab page.
   const [newtabEnabled, setNewtabEnabled] = useState(true);
   const [newtabFallback, setNewtabFallback] = useState("");
-  const themeDescription = THEME_OPTIONS.find((o) => o.value === themePref)
+
+  const themeOptions: { value: ThemePreference; label: string; description: string }[] =
+    [
+      {
+        value: "auto",
+        label: t("options.preference.theme.auto"),
+        description: t("options.preference.theme.auto.desc"),
+      },
+      {
+        value: "light",
+        label: t("options.preference.theme.light"),
+        description: t("options.preference.theme.light.desc"),
+      },
+      {
+        value: "dark",
+        label: t("options.preference.theme.dark"),
+        description: t("options.preference.theme.dark.desc"),
+      },
+    ];
+
+  const languageOptions: {
+    value: LanguagePreference;
+    label: string;
+    description: string;
+  }[] = [
+    {
+      value: "auto",
+      label: t("options.preference.language.auto"),
+      description: t("options.preference.language.auto.desc"),
+    },
+    {
+      value: "en",
+      label: t("options.preference.language.en"),
+      description: t("options.preference.language.en.desc"),
+    },
+    {
+      value: "zh-CN",
+      label: t("options.preference.language.zh-CN"),
+      description: t("options.preference.language.zh-CN.desc"),
+    },
+  ];
+
+  const themeDescription = themeOptions.find((o) => o.value === themePref)
+    ?.description;
+  const languageDescription = languageOptions.find((o) => o.value === langPref)
     ?.description;
 
   useEffect(() => {
@@ -93,13 +121,48 @@ export function SettingsPreferences() {
     <div className="space-y-4">
       <section className="space-y-3">
         <div className="flex flex-col gap-1.5">
-          <Label className="shrink-0">Theme</Label>
+          <Label className="shrink-0">{t("options.preference.language")}</Label>
           <div
             className="inline-flex w-fit max-w-full flex-wrap gap-1 rounded-md bg-muted/40 p-1"
             role="radiogroup"
-            aria-label="Theme"
+            aria-label={t("options.preference.language")}
           >
-            {THEME_OPTIONS.map((opt) => {
+            {languageOptions.map((opt) => {
+              const active = langPref === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => void setLangPref(opt.value)}
+                  className={cn(
+                    "rounded px-3 py-1 text-xs font-medium transition-colors",
+                    active
+                      ? "bg-background text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+          {languageDescription && (
+            <p className="text-xs text-muted-foreground">{languageDescription}</p>
+          )}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex flex-col gap-1.5">
+          <Label className="shrink-0">{t("options.preference.theme")}</Label>
+          <div
+            className="inline-flex w-fit max-w-full flex-wrap gap-1 rounded-md bg-muted/40 p-1"
+            role="radiogroup"
+            aria-label={t("options.preference.theme")}
+          >
+            {themeOptions.map((opt) => {
               const active = themePref === opt.value;
               return (
                 <button
@@ -129,7 +192,7 @@ export function SettingsPreferences() {
       <section className="space-y-3">
         <div className="flex flex-col gap-2">
           <Label htmlFor="prefs-show-stream-details" className="shrink-0">
-            Side panel stream details
+            {t("options.preference.stream.label")}
           </Label>
           <div className="flex items-center gap-3">
             <Switch
@@ -143,8 +206,7 @@ export function SettingsPreferences() {
               }}
             />
             <p className="text-xs text-muted-foreground">
-              When on, the side panel shows tool calls and reasoning fragments
-              streamed from the model (kept in sync with the in-panel toggle).
+              {t("options.preference.stream.desc")}
             </p>
           </div>
         </div>
@@ -153,7 +215,7 @@ export function SettingsPreferences() {
       <section className="space-y-3">
         <div className="flex flex-col gap-2">
           <Label htmlFor="prefs-newtab-enabled" className="shrink-0">
-            Use Hermes as new tab page
+            {t("options.preference.newtab.label")}
           </Label>
           <div className="flex items-center gap-3">
             <Switch
@@ -167,9 +229,7 @@ export function SettingsPreferences() {
               }}
             />
             <p className="text-xs text-muted-foreground">
-              When on, opening a new tab shows the Hermes chat. The extension
-              must still be granted the new-tab override permission by Chrome
-              the first time it tries to take over.
+              {t("options.preference.newtab.desc")}
             </p>
           </div>
         </div>
@@ -182,7 +242,7 @@ export function SettingsPreferences() {
               newtabEnabled && "text-muted-foreground/60",
             )}
           >
-            Fallback URL when off
+            {t("options.preference.newtab.fallback")}
           </Label>
           <Input
             id="prefs-newtab-fallback"
@@ -194,16 +254,14 @@ export function SettingsPreferences() {
                 [NEWTAB_FALLBACK_KEY]: next,
               });
             }}
-            placeholder="https://www.google.com (leave blank for a Hermes splash)"
+            placeholder={t("options.preference.newtab.fallback.placeholder")}
             className="font-mono text-xs"
             disabled={newtabEnabled}
             autoComplete="off"
             spellCheck={false}
           />
           <p className="text-[11px] text-muted-foreground">
-            Only used when the toggle above is off. With a URL set, new tabs
-            redirect there; otherwise they land on a small Hermes splash with a
-            link back to options.
+            {t("options.preference.newtab.fallback.desc")}
           </p>
         </div>
       </section>

@@ -23,6 +23,7 @@ import {
   type HermesSkillOrigin,
   type HermesSkillsResponse,
 } from "~lib/hermes-skills";
+import { useT } from "~lib/i18n";
 import { cn } from "~lib/utils";
 
 import { OPTIONS_SHELL_HEADER_ROW } from "./optionsPageChrome";
@@ -557,6 +558,7 @@ const EMPTY_RESPONSE: HermesSkillsResponse = {
 
 /** Read-only view of Hermes skills available to the current agent. */
 export function SettingsSkills() {
+  const { t } = useT();
   const [data, setData] = useState<HermesSkillsResponse>(EMPTY_RESPONSE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -742,14 +744,20 @@ export function SettingsSkills() {
       >
         <div className="flex min-w-0 flex-col justify-center gap-0.5 leading-tight">
           <h2 className="text-sm font-semibold tracking-tight text-foreground">
-            Skills
+            {t("options.skills.title")}
           </h2>
           <p
             className="truncate text-[11px] text-muted-foreground"
             title={data.skills_dirs.join("\n") || "$HERMES_HOME/skills"}
           >
-            Skills available to the current agent ({data.totals.enabled} / {data.totals.total})
-            {data.platform && `  ·  platform=${data.platform}`}
+            {t("options.skills.subtitle.summary", {
+              enabled: data.totals.enabled,
+              total: data.totals.total,
+            })}
+            {data.platform &&
+              t("options.skills.subtitle.platform", {
+                platform: data.platform,
+              })}
           </p>
         </div>
         <Button
@@ -765,7 +773,7 @@ export function SettingsSkills() {
           ) : (
             <RefreshCw className="h-3.5 w-3.5" />
           )}
-          Refresh
+          {t("options.skills.refresh")}
         </Button>
       </header>
 

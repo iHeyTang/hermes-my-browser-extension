@@ -14,7 +14,7 @@ import secrets
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from ..adapters.hermes_core import hermes_home
+from ...adapters.hermes_core import hermes_home
 
 PLUGIN_NAME = "hermes-my-browser-extension"
 MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
