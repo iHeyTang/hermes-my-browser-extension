@@ -4,6 +4,29 @@
 
 Hermes drives a **separate Chrome window** in your normal profile (no debugging banner, no stealing focus from your working tab). This repo adds a Plasmo extension plus a small Python bridge.
 
+## Prerequisites
+
+This extension is the **frontend** piece of a three-repo stack. You need all
+three pieces running for the extension to be useful:
+
+| Repo | What it gives you |
+|---|---|
+| [hermes-plugin-http-backplane](https://github.com/iHeyTang/hermes-plugin-http-backplane) | Local HTTP server on `127.0.0.1:9394` that this extension talks to (sessions / cron / skills / model config / lifecycle). Without it the extension shows an "offline" onboarding screen. |
+| [hermes-plugin-browser-tools](https://github.com/iHeyTang/hermes-plugin-browser-tools) | Hermes-side tools (`my_browser_screenshot`, `my_browser_inbox_*`, etc.) so the agent can drive this extension. Without it, this extension still works but the agent has no browser tools. |
+| **this repo** | The Chrome extension (side panel + home page + chat tab + options). |
+
+### Quick install
+
+After [Hermes Agent](https://github.com/NousResearch/hermes-agent) is set up:
+
+```bash
+hermes plugins install iHeyTang/hermes-plugin-http-backplane
+hermes plugins install iHeyTang/hermes-plugin-browser-tools
+hermes chat   # starts Hermes + the backplane HTTP server
+```
+
+Then install this extension (see [Install with Hermes](#install-with-hermes-recommended) below). The extension's **Status** tab is the canonical "is everything wired up correctly?" check — green badges = ready to chat.
+
 The extension surfaces Hermes in four places:
 
 - **Side panel** — chat alongside the page you're browsing.
@@ -129,6 +152,29 @@ https://raw.githubusercontent.com/iHeyTang/hermes-my-browser-extension/main/docs
 Short guide: [`after-install.md`](./after-install.md)
 
 Technical / packaging details: [`DEVELOPER.md`](./DEVELOPER.md)
+
+## Distribution
+
+The extension is **not on the Chrome Web Store** (yet). Users install
+via sideload:
+
+1. Visit the [download page](https://iheytang.github.io/hermes-my-browser-extension/)
+   (served by GitHub Pages from `docs/index.html`)
+2. Download the latest `.zip` (pulled from this repo's
+   [GitHub Releases](https://github.com/iHeyTang/hermes-my-browser-extension/releases))
+3. Unzip → `chrome://extensions/` → Developer mode → Load unpacked
+
+The download page reads its release source from a single config block,
+so a future swap to a self-hosted artifact registry is one config edit
+away — no UI rework needed.
+
+## For maintainers
+
+- [`docs/index.html`](./docs/index.html) — the download page (GitHub Pages source)
+- [`.github/workflows/release.yml`](./.github/workflows/release.yml) —
+  CI: builds + attaches zip to GitHub Releases on `v*` tag push
+- [`RELEASE.md`](./RELEASE.md) — release workflow (bump version → tag → CI does the rest)
+- [`PRIVACY.md`](./PRIVACY.md) — public privacy policy (linked from the download page)
 
 ## Uninstall
 

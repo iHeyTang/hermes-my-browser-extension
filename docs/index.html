@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hermes Browser Extension — Download</title>
+  <meta name="description" content="Chrome extension that drives Hermes Agent from your browser. Download the latest zip and install via developer mode.">
+  <link rel="icon" href="https://raw.githubusercontent.com/iHeyTang/hermes-my-browser-extension/main/extension/assets/icon128.png">
+  <style>
+    :root {
+      --bg: #fafafa;
+      --fg: #18181b;
+      --fg-mute: #71717a;
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --border: #e4e4e7;
+      --card: #ffffff;
+      --code-bg: #f4f4f5;
+      --warn: #d97706;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0a0a0a;
+        --fg: #fafafa;
+        --fg-mute: #a1a1aa;
+        --accent: #818cf8;
+        --accent-hover: #a5b4fc;
+        --border: #27272a;
+        --card: #18181b;
+        --code-bg: #18181b;
+        --warn: #f59e0b;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+    }
+    .container { max-width: 760px; margin: 0 auto; padding: 56px 24px 80px; }
+    header { display: flex; align-items: center; gap: 16px; margin-bottom: 40px; }
+    header img { width: 64px; height: 64px; }
+    header h1 { margin: 0; font-size: 28px; line-height: 1.2; }
+    header .lead { margin: 4px 0 0; color: var(--fg-mute); font-size: 14px; }
+
+    section { margin: 36px 0; }
+    section > h2 {
+      font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--fg-mute); margin: 0 0 14px;
+    }
+
+    .step { display: flex; gap: 14px; margin-bottom: 22px; }
+    .step-num {
+      flex: 0 0 28px; height: 28px; border-radius: 999px;
+      background: var(--accent); color: white;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 600;
+    }
+    .step-body { flex: 1; min-width: 0; }
+    .step h3 { margin: 4px 0 10px; font-size: 15px; }
+    .step p { margin: 0 0 10px; color: var(--fg-mute); font-size: 13px; }
+
+    pre, code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12.5px;
+    }
+    pre {
+      background: var(--code-bg); border: 1px solid var(--border);
+      border-radius: 6px; padding: 12px 14px; overflow-x: auto;
+      margin: 0; position: relative;
+    }
+    pre code { background: transparent; padding: 0; }
+    .code-block { position: relative; }
+    .copy-btn {
+      position: absolute; top: 8px; right: 8px;
+      background: transparent; border: 1px solid var(--border);
+      color: var(--fg-mute); border-radius: 4px;
+      padding: 2px 8px; font-size: 11px; cursor: pointer;
+    }
+    .copy-btn:hover { color: var(--fg); border-color: var(--fg-mute); }
+
+    .download-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 10px; padding: 20px; margin-top: 8px;
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    .download-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 16px; flex-wrap: wrap;
+    }
+    .release-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .release-version { font-weight: 600; font-size: 16px; }
+    .release-sub { color: var(--fg-mute); font-size: 12px; }
+    .download-btn {
+      background: var(--accent); color: white;
+      text-decoration: none; padding: 10px 20px; border-radius: 6px;
+      font-weight: 600; font-size: 14px; white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .download-btn:hover { background: var(--accent-hover); }
+    .download-btn[aria-disabled="true"] {
+      background: var(--fg-mute); cursor: not-allowed;
+    }
+    .download-error {
+      color: var(--warn); font-size: 12px;
+      padding-top: 4px;
+    }
+
+    ol { padding-left: 22px; margin: 0; }
+    ol li { margin-bottom: 6px; color: var(--fg-mute); font-size: 13px; }
+    ol li strong { color: var(--fg); font-weight: 500; }
+
+    .footer {
+      margin-top: 56px; padding-top: 20px;
+      border-top: 1px solid var(--border);
+      display: flex; gap: 16px; flex-wrap: wrap;
+      font-size: 12px; color: var(--fg-mute);
+    }
+    .footer a { color: var(--fg-mute); text-decoration: none; }
+    .footer a:hover { color: var(--fg); text-decoration: underline; }
+    .footer .sep { color: var(--border); }
+
+    .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .badge {
+      font-size: 11px; padding: 2px 8px; border-radius: 999px;
+      background: var(--code-bg); color: var(--fg-mute);
+      border: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <img src="https://raw.githubusercontent.com/iHeyTang/hermes-my-browser-extension/main/extension/assets/icon128.png" alt="">
+      <div>
+        <h1>Hermes Browser Extension</h1>
+        <p class="lead">Drive Hermes Agent from your browser — side panel, agent-controlled tabs, userscripts, all running locally.</p>
+        <div class="badges">
+          <span class="badge">Chrome / Edge / Brave / Arc</span>
+          <span class="badge">Manifest V3</span>
+          <span class="badge">MIT</span>
+        </div>
+      </div>
+    </header>
+
+    <section>
+      <h2>Step 1 — Set up Hermes Agent + plugins</h2>
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <p>Install Hermes Agent (if you haven't already), then the two
+            companion plugins this extension needs, then start it:</p>
+          <div class="code-block">
+            <pre id="install-cmds"><code>pip install hermes-agent
+hermes plugins install iHeyTang/hermes-plugin-http-backplane
+hermes plugins install iHeyTang/hermes-plugin-browser-tools
+hermes chat</code></pre>
+            <button class="copy-btn" data-copy="install-cmds">copy</button>
+          </div>
+          <p style="margin-top: 8px">
+            The <code>hermes chat</code> step boots the local HTTP backplane
+            on <code>127.0.0.1:9394</code> — the extension needs that running
+            to do anything useful.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Step 2 — Download the extension</h2>
+      <div class="download-card" id="download-card">
+        <div class="download-row">
+          <div class="release-meta">
+            <span class="release-version" id="release-version">Loading…</span>
+            <span class="release-sub" id="release-sub">Fetching latest release…</span>
+          </div>
+          <a id="download-btn" class="download-btn" aria-disabled="true" href="#">Download .zip</a>
+        </div>
+        <div id="download-error" class="download-error" hidden></div>
+      </div>
+      <p style="margin-top: 14px; font-size: 12px; color: var(--fg-mute);">
+        Past versions:
+        <a href="https://github.com/iHeyTang/hermes-my-browser-extension/releases" style="color: inherit;">GitHub Releases</a>
+      </p>
+    </section>
+
+    <section>
+      <h2>Step 3 — Sideload into Chrome</h2>
+      <ol>
+        <li>Unzip the file you just downloaded.</li>
+        <li>Open <strong><code>chrome://extensions/</code></strong> in your browser.</li>
+        <li>Toggle <strong>Developer mode</strong> on (top right corner).</li>
+        <li>Click <strong>Load unpacked</strong> and pick the unzipped folder.</li>
+        <li>Pin the Hermes icon, click it to open the side panel — or click the new-tab page to see Hermes Home.</li>
+      </ol>
+      <p style="margin-top: 14px; font-size: 13px; color: var(--fg-mute);">
+        The extension's <strong>Status</strong> tab is the canonical "is everything wired up?" check.
+        If the backplane isn't reachable, you'll see an onboarding screen there with copy-pasteable fix commands.
+      </p>
+    </section>
+
+    <div class="footer">
+      <a href="https://github.com/iHeyTang/hermes-my-browser-extension">Source on GitHub</a>
+      <span class="sep">·</span>
+      <a href="https://github.com/iHeyTang/hermes-my-browser-extension/blob/main/PRIVACY.md">Privacy</a>
+      <span class="sep">·</span>
+      <a href="https://github.com/iHeyTang/hermes-my-browser-extension/issues">Issues</a>
+      <span class="sep">·</span>
+      <a href="https://github.com/iHeyTang/hermes-plugin-http-backplane">backplane plugin</a>
+      <span class="sep">·</span>
+      <a href="https://github.com/iHeyTang/hermes-plugin-browser-tools">browser-tools plugin</a>
+    </div>
+  </div>
+
+  <script>
+  /**
+   * Single config block — swap to a self-hosted artifact registry by
+   * changing ``type`` to "custom" and pointing ``manifestUrl`` at a
+   * JSON endpoint that returns:
+   *   { version: "0.4.0",
+   *     released_at: "2026-08-01T12:00:00Z",
+   *     zip_url: "https://your-host/.../hermes-extension-v0.4.0.zip",
+   *     size_bytes: 7340032 }
+   */
+  const RELEASE_SOURCE = {
+    type: 'github',
+    owner: 'iHeyTang',
+    repo: 'hermes-my-browser-extension',
+    // For custom hosting (later):
+    // type: 'custom',
+    // manifestUrl: 'https://hermes-x.iheytang.com/releases/latest.json',
+  };
+
+  async function getLatestRelease() {
+    if (RELEASE_SOURCE.type === 'github') {
+      const url = `https://api.github.com/repos/${RELEASE_SOURCE.owner}/${RELEASE_SOURCE.repo}/releases/latest`;
+      const res = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
+      if (!res.ok) throw new Error(`GitHub API: ${res.status} ${res.statusText}`);
+      const data = await res.json();
+      // Pick the first .zip asset; the CI uploads a single one named
+      // hermes-extension-vX.Y.Z.zip
+      const asset = (data.assets || []).find(a => a.name.endsWith('.zip'));
+      if (!asset) throw new Error('No .zip asset attached to the latest release.');
+      return {
+        version: data.tag_name || data.name || 'unknown',
+        releasedAt: data.published_at,
+        zipUrl: asset.browser_download_url,
+        sizeBytes: asset.size,
+      };
+    }
+    if (RELEASE_SOURCE.type === 'custom') {
+      const res = await fetch(RELEASE_SOURCE.manifestUrl, { cache: 'no-cache' });
+      if (!res.ok) throw new Error(`Custom registry: ${res.status} ${res.statusText}`);
+      const d = await res.json();
+      return {
+        version: d.version,
+        releasedAt: d.released_at,
+        zipUrl: d.zip_url,
+        sizeBytes: d.size_bytes,
+      };
+    }
+    throw new Error(`Unknown RELEASE_SOURCE.type: ${RELEASE_SOURCE.type}`);
+  }
+
+  function fmtSize(bytes) {
+    if (!bytes) return '';
+    const mb = bytes / 1024 / 1024;
+    return mb >= 1 ? `${mb.toFixed(1)} MB` : `${(bytes / 1024).toFixed(0)} KB`;
+  }
+  function fmtDate(iso) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); }
+    catch { return iso; }
+  }
+
+  (async () => {
+    const ver = document.getElementById('release-version');
+    const sub = document.getElementById('release-sub');
+    const btn = document.getElementById('download-btn');
+    const err = document.getElementById('download-error');
+    try {
+      const r = await getLatestRelease();
+      ver.textContent = r.version;
+      sub.textContent = [fmtDate(r.releasedAt), fmtSize(r.sizeBytes)].filter(Boolean).join(' · ');
+      btn.href = r.zipUrl;
+      btn.removeAttribute('aria-disabled');
+      btn.setAttribute('download', '');
+    } catch (e) {
+      ver.textContent = 'Latest release unavailable';
+      sub.textContent = 'Falling back to GitHub Releases page.';
+      btn.href = 'https://github.com/iHeyTang/hermes-my-browser-extension/releases';
+      btn.removeAttribute('aria-disabled');
+      btn.textContent = 'Browse releases';
+      err.hidden = false;
+      err.textContent = String(e && e.message ? e.message : e);
+    }
+  })();
+
+  // Copy-button delegation.
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.copy-btn');
+    if (!btn) return;
+    const targetId = btn.getAttribute('data-copy');
+    const src = document.getElementById(targetId);
+    if (!src) return;
+    try {
+      await navigator.clipboard.writeText(src.innerText);
+      const orig = btn.textContent;
+      btn.textContent = 'copied';
+      setTimeout(() => { btn.textContent = orig; }, 1200);
+    } catch { /* clipboard might be blocked; silently fail */ }
+  });
+  </script>
+</body>
+</html>

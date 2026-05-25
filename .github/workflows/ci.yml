@@ -1,0 +1,57 @@
+name: CI
+
+# Sanity-check every push / PR against ``main``: install deps, run the
+# TypeScript compiler in no-emit mode, and confirm the production build
+# still succeeds. Catches regressions before they hit a tag and trigger
+# release.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Only one CI run per branch — newer pushes cancel the older one.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: extension/pnpm-lock.yaml
+
+      - name: Install deps
+        working-directory: extension
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: extension
+        run: pnpm exec tsc --noEmit -p tsconfig.json
+
+      - name: Build (production)
+        working-directory: extension
+        run: pnpm build
+
+      - name: Verify bundle size
+        working-directory: extension/build/chrome-mv3-prod
+        run: |
+          # Chrome rejects extensions > 10 MB. Fail PR if we cross it
+          # so a release that would be rejected anyway never gets cut.
+          SIZE=$(du -sb . | cut -f1)
+          echo "Bundle size: ${SIZE} bytes"
+          if [[ "$SIZE" -gt 10485760 ]]; then
+            echo "::error::Bundle size ${SIZE} bytes exceeds Chrome's 10 MB hard limit." >&2
+            exit 1
+          fi

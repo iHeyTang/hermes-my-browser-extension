@@ -7,7 +7,7 @@
  * tail-poll ``GET /hermes/actions/<name>/status`` until ``running=false``.
  */
 
-import { Loader2, RefreshCw } from "lucide-react";
+import { Copy, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Badge } from "~components/ui/badge";
@@ -25,6 +25,26 @@ import {
 
 const STATUS_POLL_MS = 10_000;
 const ACTION_POLL_MS = 1_000;
+
+/**
+ * Commands the user pastes into a terminal to set up the backplane stack.
+ * Kept here (instead of i18n) because they're copy/paste literal and
+ * shouldn't be translated.
+ */
+const INSTALL_COMMANDS = [
+  "hermes plugins install iHeyTang/hermes-plugin-http-backplane",
+  "hermes plugins install iHeyTang/hermes-plugin-browser-tools",
+  "hermes chat   # 启动 Hermes 进程 + backplane HTTP server",
+];
+
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface ActionRunState {
   running: boolean;
@@ -70,6 +90,92 @@ function Field({
         {children}
       </span>
     </div>
+  );
+}
+
+function OnboardingGate({
+  error,
+  onRetry,
+  loading,
+}: {
+  error: string;
+  onRetry: () => void;
+  loading: boolean;
+}) {
+  const allCmd = INSTALL_COMMANDS.join("\n");
+  const [copied, setCopied] = useState(false);
+
+  async function copyAll() {
+    if (await copyToClipboard(allCmd)) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    }
+  }
+
+  return (
+    <section className="space-y-3 rounded-md border border-amber-500/40 bg-amber-50/40 p-4 dark:bg-amber-950/20">
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+          Backplane 没连上
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          扩展需要本地 Hermes Agent 跑起来 + 装两个 Python 插件。请按下面三步：
+        </p>
+      </div>
+
+      <ol className="ml-5 list-decimal space-y-1 text-xs text-muted-foreground">
+        <li>
+          先装好 Hermes Agent —— 见{" "}
+          <a
+            href="https://github.com/NousResearch/hermes-agent"
+            target="_blank"
+            rel="noreferrer"
+            className="text-foreground underline underline-offset-2"
+          >
+            官方文档
+          </a>
+        </li>
+        <li>装两个必需 Hermes 插件</li>
+        <li>
+          启动 Hermes：<code className="font-mono">hermes chat</code>{" "}
+          或任意长命模式
+        </li>
+      </ol>
+
+      <div className="relative">
+        <pre className="overflow-x-auto rounded bg-muted/60 p-3 pr-12 font-mono text-[11px] leading-relaxed">
+          {INSTALL_COMMANDS.join("\n")}
+        </pre>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="absolute right-2 top-2 h-6 gap-1 px-2 text-[10px]"
+          onClick={() => void copyAll()}
+        >
+          <Copy className="h-3 w-3" />
+          {copied ? "copied" : "copy"}
+        </Button>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <Button size="sm" onClick={onRetry} disabled={loading}>
+          {loading ? (
+            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+          ) : (
+            <RefreshCw className="mr-1 h-3 w-3" />
+          )}
+          重新检测
+        </Button>
+        <span className="text-[10px] text-muted-foreground">
+          检测到 127.0.0.1:9394 响应后，下面会自动显示运行状态
+        </span>
+      </div>
+
+      <details className="text-[10px] text-muted-foreground">
+        <summary className="cursor-pointer">报错详情</summary>
+        <pre className="mt-1 whitespace-pre-wrap break-all">{error}</pre>
+      </details>
+    </section>
   );
 }
 
@@ -285,7 +391,11 @@ export function SettingsStatus() {
       <div className="min-h-0 flex-1 overflow-auto p-6">
         <div className="space-y-10">
           {statusErr && (
-            <p className="text-xs text-destructive">{statusErr}</p>
+            <OnboardingGate
+              error={statusErr}
+              onRetry={refreshStatus}
+              loading={statusLoading}
+            />
           )}
           {!statusErr && !status && (
             <p className="text-xs text-muted-foreground">Loading…</p>

@@ -1,0 +1,93 @@
+name: Release
+
+# Builds the Plasmo production bundle and uploads it as a GitHub Release
+# asset whenever a ``vX.Y.Z`` tag is pushed. The download page (docs/index.html,
+# served via GitHub Pages) reads the latest release through the GitHub
+# Releases API, so no further plumbing is needed for users to pick up the
+# new version.
+#
+# See RELEASE.md for the full release workflow.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+  # Manual trigger for testing the build without cutting a real release.
+  # The artifact is uploaded as a workflow artifact instead of a release.
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required by softprops/action-gh-release to create releases
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: extension/pnpm-lock.yaml
+
+      - name: Install deps
+        working-directory: extension
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: extension
+        run: pnpm build
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            # workflow_dispatch — use SHA-derived tag so the artifact name is unique
+            echo "tag=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package
+        id: pkg
+        working-directory: extension/build/chrome-mv3-prod
+        run: |
+          ZIP_NAME="hermes-extension-${{ steps.ver.outputs.tag }}.zip"
+          zip -r "../../../${ZIP_NAME}" .
+          echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "zip_path=extension/${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify size
+        run: |
+          SIZE=$(stat -c%s "${{ steps.pkg.outputs.zip_path }}")
+          echo "Zip size: ${SIZE} bytes"
+          # Chrome rejects extensions > 10 MB. Fail loud before the user discovers this.
+          if [[ "$SIZE" -gt 10485760 ]]; then
+            echo "ERROR: zip exceeds Chrome's 10 MB hard limit." >&2
+            exit 1
+          fi
+
+      # Tag push → real release with notes auto-generated from the commit log
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.pkg.outputs.zip_path }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      # Manual dispatch → workflow artifact only, no release
+      - name: Upload artifact (manual run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.zip_name }}
+          path: ${{ steps.pkg.outputs.zip_path }}
+          if-no-files-found: error
+          retention-days: 14
