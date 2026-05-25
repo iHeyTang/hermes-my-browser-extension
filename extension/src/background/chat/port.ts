@@ -22,6 +22,7 @@ import {
   CHAT_PORT_NAME,
   type BgToClientMessage,
   type ClientToBgMessage,
+  type SnapshotFrame,
   type StreamEvent,
 } from "./types";
 
@@ -62,11 +63,19 @@ function unsubscribeAll(port: chrome.runtime.Port): void {
 
 function sendSnapshot(port: chrome.runtime.Port, sessionId: string): void {
   const state = getState(sessionId);
-  const frame: BgToClientMessage = {
-    type: "snapshot",
-    sessionId,
-    state,
-  };
+  // Discriminate the four possible lifecycle states explicitly so the panel
+  // never has to infer them from `state === null + locally-set streaming
+  // flag`. See `SnapshotFrame` in ./types for the semantics.
+  let frame: SnapshotFrame;
+  if (!state) {
+    frame = { type: "snapshot", sessionId, kind: "absent" };
+  } else if (state.streaming) {
+    frame = { type: "snapshot", sessionId, kind: "live", state };
+  } else if (state.error) {
+    frame = { type: "snapshot", sessionId, kind: "interrupted", state };
+  } else {
+    frame = { type: "snapshot", sessionId, kind: "completed", state };
+  }
   try {
     port.postMessage(frame);
   } catch (e) {

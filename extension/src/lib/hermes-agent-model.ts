@@ -7,7 +7,7 @@
  */
 
 import {
-  ATTACHMENT_HTTP_BASE,
+  BACKPLANE_HTTP_BASE,
 } from "../background/config";
 
 /**
@@ -125,7 +125,7 @@ export async function getHermesMainProviderSettings(
       ? `?provider=${encodeURIComponent(p)}`
       : "";
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/main-provider-settings${q}`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/main-provider-settings${q}`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as HermesMainProviderSettingsResponse;
     if (!res.ok || data.ok === false) {
@@ -179,7 +179,7 @@ export async function setHermesAgentMainModel(patch: {
   base_url?: string | null;
 }): Promise<HermesAgentMainModelResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/main-model`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/main-model`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -209,7 +209,7 @@ export async function saveHermesMainProviderSettings(body: {
   credentials?: Record<string, string> | null;
 }): Promise<HermesAgentMainModelResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/main-provider-settings`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/main-provider-settings`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -237,7 +237,7 @@ export async function getHermesModelCatalog(
 ): Promise<HermesModelCatalogResponse> {
   const q = refresh ? "?refresh=1" : "";
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/model-catalog${q}`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/model-catalog${q}`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as HermesModelCatalogResponse;
     if (!res.ok || data.ok === false) {
@@ -316,7 +316,7 @@ export interface AuxiliaryModelsResponse {
 
 export async function getHermesAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/auxiliary-models`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/auxiliary-models`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as AuxiliaryModelsResponse;
     if (!res.ok || data.ok === false) {
@@ -339,7 +339,7 @@ export async function setHermesAuxiliarySlot(patch: {
   api_key?: string;
 }): Promise<AuxiliaryModelsResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/auxiliary-models`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/auxiliary-models`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -366,7 +366,7 @@ export async function getHermesProviderModels(
   try {
     const p = encodeURIComponent(providerId);
     const q = refresh ? "&refresh=1" : "";
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/provider-models?provider=${p}${q}`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/provider-models?provider=${p}${q}`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as HermesProviderModelsResponse;
     if (!res.ok || data.ok === false) {

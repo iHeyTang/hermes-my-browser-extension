@@ -7,7 +7,7 @@
  * field names so the options page stays consistent with Hermes's own dump.
  */
 
-import { ATTACHMENT_HTTP_BASE } from "../background/config";
+import { BACKPLANE_HTTP_BASE } from "../background/config";
 
 export type HermesCronScheduleKind = "once" | "interval" | "cron";
 
@@ -189,7 +189,7 @@ async function readJson<T extends { ok: boolean; error?: string }>(
 
 export async function getHermesCronJobs(): Promise<HermesCronListResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/cron/jobs`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/jobs`;
     const res = await fetch(url, { method: "GET" });
     const data = await readJson<HermesCronListResponse>(res);
     if (!res.ok || data.ok === false) {
@@ -209,7 +209,7 @@ export async function getHermesCronJob(
   jobId: string,
 ): Promise<HermesCronJobResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}`;
     const res = await fetch(url, { method: "GET" });
     const data = await readJson<HermesCronJobResponse>(res);
     if (!res.ok || data.ok === false) {
@@ -225,7 +225,7 @@ export async function createHermesCronJob(
   input: HermesCronCreateInput,
 ): Promise<HermesCronJobResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/cron/jobs`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/jobs`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -246,7 +246,7 @@ export async function updateHermesCronJob(
   updates: HermesCronUpdateInput,
 ): Promise<HermesCronJobResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -267,7 +267,7 @@ async function lifecycle(
   op: "pause" | "resume" | "trigger",
 ): Promise<HermesCronJobResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}/${op}`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}/${op}`;
     const res = await fetch(url, { method: "POST" });
     const data = await readJson<HermesCronJobResponse>(res);
     if (!res.ok || data.ok === false) {
@@ -287,7 +287,7 @@ export async function deleteHermesCronJob(
   jobId: string,
 ): Promise<HermesCronDeleteResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}`;
     const res = await fetch(url, { method: "DELETE" });
     const data = await readJson<HermesCronDeleteResponse>(res);
     if (!res.ok || data.ok === false) {
@@ -303,7 +303,7 @@ export async function previewHermesCronSchedule(
   schedule: string,
 ): Promise<HermesCronParsePreviewResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/cron/parse-schedule`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/parse-schedule`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

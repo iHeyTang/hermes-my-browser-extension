@@ -7,8 +7,8 @@
  *
  * The extension never embeds binary payloads in the chat completion request
  * and never uses OpenAI's multimodal `image_url` content parts. Instead,
- * every attached file is uploaded over HTTP to the bridge process
- * (`POST /attach`), which writes it under `~/.hermes/plugins/<plugin>/attachments/<session>/`
+ * every attached file is uploaded over HTTP to the backplane plugin
+ * (`POST /hermes/attachments`), which writes it under `~/.hermes/plugins/<plugin>/attachments/<session>/`
  * and returns the absolute path. The chat prompt references that path
  * inside a `<file-attachment>` text block appended to the user message
  * content. The agent uses its own server-side tools (`vision_analyze` /
@@ -92,7 +92,7 @@ export interface FileAttachment extends AttachmentBase {
   /** Source URL when `fromPageContext` is true. */
   sourceUrl?: string;
   /**
-   * True while bytes are being uploaded (`POST` to bridge `/attach`).
+   * True while bytes are being uploaded (`POST` to backplane `/hermes/attachments`).
    * Composer chip shows a spinner; `path` is unset until complete.
    */
   uploading?: boolean;

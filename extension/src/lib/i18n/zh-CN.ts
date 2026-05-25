@@ -69,6 +69,35 @@ export const zhCN: Messages = {
     "https://www.google.com（留空则显示 Hermes 启动页）",
   "options.preference.newtab.fallback.desc":
     "仅在上方开关关闭时使用。设置 URL 后，新标签页会跳转到该地址；否则会显示一个带有跳转到设置链接的 Hermes 启动页。",
+  "options.preference.newtab.wallpaper.label": "每日壁纸背景",
+  "options.preference.newtab.wallpaper.desc":
+    "在新标签页上显示来自必应每日图片的高清壁纸，每天自动更新一次。关闭后回到纯色背景。",
+
+  // 输入框快捷动作 — 设置项
+  "options.preference.quickActions.label": "输入框快捷动作",
+  "options.preference.quickActions.desc":
+    "在聊天输入框旁边的快捷按钮，点击后会用预设提示词包裹你输入的内容并直接发送。可在下方启用/禁用内置项，也可以添加自定义项。",
+  "options.preference.quickActions.builtins": "内置动作",
+  "options.preference.quickActions.custom": "自定义动作",
+  "options.preference.quickActions.add": "新增动作",
+  "options.preference.quickActions.reset": "恢复默认",
+  "options.preference.quickActions.empty":
+    "还没有自定义动作。新增后即可在输入框直接调用你自己的提示词模板。",
+  "options.preference.quickActions.field.label": "标签",
+  "options.preference.quickActions.field.label.placeholder": "润色（正式语气）",
+  "options.preference.quickActions.field.tooltip": "悬浮提示（可选）",
+  "options.preference.quickActions.field.tooltip.placeholder":
+    "鼠标悬浮时显示；不填则使用标签内容。",
+  "options.preference.quickActions.field.template": "提示词模板",
+  "options.preference.quickActions.field.template.placeholder":
+    "请将以下内容改写为正式语气：\n\n{input}",
+  "options.preference.quickActions.field.template.help":
+    "使用 {input} 作为用户输入文本的占位符。如果未包含 {input}，将自动把用户输入追加到末尾。",
+  "options.preference.quickActions.action.save": "保存",
+  "options.preference.quickActions.action.cancel": "取消",
+  "options.preference.quickActions.action.edit": "编辑",
+  "options.preference.quickActions.action.delete": "删除",
+  "options.preference.quickActions.delete.confirm": "删除这个快捷动作？",
 
   // Userscripts
   "options.scripts.title": "用户脚本",
@@ -348,10 +377,17 @@ export const zhCN: Messages = {
   "newtab.greeting": "我可以帮你做什么？",
   "newtab.subtitle":
     "查资料、读页面、处理飞书、跑脚本 — 把你想做的事告诉我就行。",
-  "newtab.placeholder": "向 Hermes 提问…",
+  // Typewriter cycle in the new-tab composer — keep each line short
+  // enough to fit on one line at the default composer width (~640px)
+  // and concrete enough to suggest a real capability rather than just
+  // "ask me anything".
+  "newtab.placeholder.example.1": "今天我有哪些会议?",
+  "newtab.placeholder.example.2": "帮我把这段英文翻译成中文…",
+  "newtab.placeholder.example.3": "总结一下这个网页",
+  "newtab.placeholder.example.4": "搜一下硅谷最近的 AI 新闻",
+  "newtab.placeholder.example.5": "用 Python 实现一个快速排序",
   "newtab.send": "发送",
   "newtab.send.tooltip": "发送（Enter）",
-  "newtab.refresh": "刷新",
   "newtab.openOptions": "打开 Hermes 设置",
   "newtab.history": "历史",
   "newtab.latest": "最新",
@@ -385,8 +421,37 @@ export const zhCN: Messages = {
   "newtab.relative.hAgo": "{n} 小时前",
   "newtab.relative.dAgo": "{n} 天前",
 
+  // Home shortcuts strip
+  "newtab.shortcuts.title": "快捷收藏",
+  "newtab.shortcuts.add": "添加",
+  "newtab.shortcuts.add.tooltip": "添加快捷收藏",
+  "newtab.shortcuts.remove": "移除",
+  "newtab.shortcuts.rename": "重命名",
+  "newtab.shortcuts.manage": "管理",
+  "newtab.shortcuts.manage.tooltip": "管理快捷收藏",
+  "newtab.shortcuts.manage.title": "管理快捷收藏",
+  "newtab.shortcuts.manage.close": "关闭",
+  "newtab.shortcuts.manage.moveUp": "上移",
+  "newtab.shortcuts.manage.moveDown": "下移",
+  "newtab.shortcuts.manage.listEmpty": "还没有快捷收藏。在上方添加第一个吧。",
+  "newtab.shortcuts.add.dialog.title": "添加快捷收藏",
+  "newtab.shortcuts.add.dialog.urlLabel": "链接",
+  "newtab.shortcuts.add.dialog.urlPlaceholder": "https://example.com",
+  "newtab.shortcuts.add.dialog.titleLabel": "名称",
+  "newtab.shortcuts.add.dialog.titlePlaceholder": "可留空,自动用页面标题",
+  "newtab.shortcuts.add.dialog.useCurrentTab": "使用当前活动标签页",
+  "newtab.shortcuts.add.dialog.confirm": "添加",
+  "newtab.shortcuts.add.dialog.cancel": "取消",
+  "newtab.shortcuts.add.invalidUrl": "请输入有效的 URL(包括 http:// 或 https://)。",
+  "newtab.shortcuts.empty":
+    "还没有快捷收藏 — 点击右侧 ⚙ 管理 添加你最常打开的站点。",
+
+  // Wallpaper
+  "newtab.wallpaper.cycle": "换一张壁纸",
+
   // Chat tab
   "chat.title": "Hermes 聊天",
+  "chat.goHome": "返回首页",
   "chat.newChat": "开始新对话",
   "chat.placeholder": "发送消息…",
   "chat.openOptions": "打开 Hermes 设置",
@@ -408,4 +473,24 @@ export const zhCN: Messages = {
   "chat.loadingSessions": "加载会话中…",
   "chat.noMatches": "无匹配结果。",
   "chat.noSessions": "暂无已保存的会话。",
+
+  // 输入框快捷动作 — 按钮条
+  "composer.quick.empty.tooltip":
+    "请先在输入框输入内容，然后点击快捷动作把它包裹成预设提示词。",
+  "composer.quick.translate.label": "翻译",
+  "composer.quick.translate.tooltip": "中英互译（自动检测）",
+  "composer.quick.translate.template":
+    "请翻译以下内容：如果原文是英文，请翻译成简体中文；否则翻译成英文。保留原有语气和代码块，不要解释或加任何前缀，仅输出译文。\n\n{input}",
+  "composer.quick.summarize.label": "总结",
+  "composer.quick.summarize.tooltip": "用简洁的语言总结要点",
+  "composer.quick.summarize.template":
+    "请简洁地总结以下内容。先用一句话给出最核心的结论，必要时再补充 3–5 条短要点。使用与原文相同的语言回复。\n\n{input}",
+  "composer.quick.polish.label": "润色",
+  "composer.quick.polish.tooltip": "在保持原意和语言的前提下润色表达",
+  "composer.quick.polish.template":
+    "请润色以下文字，使其更清晰、自然、合乎语法。保持原文语言和原意，不要添加新信息。仅输出润色后的文本，不要解释。\n\n{input}",
+  "composer.quick.explain.label": "解释",
+  "composer.quick.explain.tooltip": "解释这段内容/这段代码的含义",
+  "composer.quick.explain.template":
+    "请清晰地解释以下内容。如果是代码，请逐步说明它在做什么，并指出任何不直观的行为；如果是文字或概念，先解释关键术语，再讲清楚整体含义。使用与原文相同的语言回复。\n\n{input}",
 };

@@ -5,7 +5,7 @@
  *   GET /hermes/cron/output/:job/:run   — single run by id
  */
 
-import { ATTACHMENT_HTTP_BASE } from "../../background/config";
+import { BACKPLANE_HTTP_BASE } from "../../background/config";
 import type { CronRun, CronRunStatus } from "./types";
 
 interface RawRun {
@@ -66,7 +66,7 @@ export async function listCronRuns(
   }
   if (opts.includeSilent === false) params.set("include_silent", "0");
 
-  const url = `${ATTACHMENT_HTTP_BASE}/hermes/cron/output/index?${params.toString()}`;
+  const url = `${BACKPLANE_HTTP_BASE}/hermes/cron/output/index?${params.toString()}`;
   const res = await fetch(url, { signal: opts.signal });
   let body: IndexResponse | null = null;
   try {
@@ -90,7 +90,7 @@ export async function getCronRun(
   runId: string,
   opts: { signal?: AbortSignal } = {},
 ): Promise<CronRun> {
-  const url = `${ATTACHMENT_HTTP_BASE}/hermes/cron/output/${encodeURIComponent(
+  const url = `${BACKPLANE_HTTP_BASE}/hermes/cron/output/${encodeURIComponent(
     jobId,
   )}/${encodeURIComponent(runId)}`;
   const res = await fetch(url, { signal: opts.signal });

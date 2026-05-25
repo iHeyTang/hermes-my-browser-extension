@@ -75,6 +75,36 @@ export const en = {
     "https://www.google.com (leave blank for a Hermes splash)",
   "options.preference.newtab.fallback.desc":
     "Only used when the toggle above is off. With a URL set, new tabs redirect there; otherwise they land on a small Hermes splash with a link back to options.",
+  "options.preference.newtab.wallpaper.label": "Daily wallpaper background",
+  "options.preference.newtab.wallpaper.desc":
+    "Show Bing's image of the day as the new-tab background. Refreshes automatically once a day. Off falls back to a plain background.",
+
+  // Composer quick actions — Settings UI
+  "options.preference.quickActions.label": "Composer quick actions",
+  "options.preference.quickActions.desc":
+    "Chips next to the chat input that wrap your text in a preset prompt and send it. Toggle the built-ins on/off below, or add your own.",
+  "options.preference.quickActions.builtins": "Built-in actions",
+  "options.preference.quickActions.custom": "Your actions",
+  "options.preference.quickActions.add": "Add action",
+  "options.preference.quickActions.reset": "Reset to defaults",
+  "options.preference.quickActions.empty":
+    "No custom actions yet. Add one to fire your own prompt template from the composer.",
+  "options.preference.quickActions.field.label": "Label",
+  "options.preference.quickActions.field.label.placeholder": "Polish (formal)",
+  "options.preference.quickActions.field.tooltip": "Tooltip (optional)",
+  "options.preference.quickActions.field.tooltip.placeholder":
+    "Shown on hover; defaults to the label.",
+  "options.preference.quickActions.field.template": "Prompt template",
+  "options.preference.quickActions.field.template.placeholder":
+    "Rewrite the following in a formal tone:\n\n{input}",
+  "options.preference.quickActions.field.template.help":
+    "Use {input} as the placeholder for the user's typed text. If omitted, the user's text is appended on a new line.",
+  "options.preference.quickActions.action.save": "Save",
+  "options.preference.quickActions.action.cancel": "Cancel",
+  "options.preference.quickActions.action.edit": "Edit",
+  "options.preference.quickActions.action.delete": "Delete",
+  "options.preference.quickActions.delete.confirm":
+    "Delete this quick action?",
 
   // Userscripts
   "options.scripts.title": "Userscripts",
@@ -380,10 +410,17 @@ export const en = {
   "newtab.greeting": "What can I help with?",
   "newtab.subtitle":
     "Look something up, read a page, handle Feishu, run a script — just tell me what you need.",
-  "newtab.placeholder": "Message Hermes…",
+  // Typewriter cycle in the new-tab composer — keep each line short
+  // enough to fit on one line at the default composer width (~640px)
+  // and concrete enough to suggest a real capability rather than just
+  // "ask me anything".
+  "newtab.placeholder.example.1": "What's on my calendar today?",
+  "newtab.placeholder.example.2": "Translate this paragraph to Chinese…",
+  "newtab.placeholder.example.3": "Summarise this web page",
+  "newtab.placeholder.example.4": "Latest AI news from the Valley",
+  "newtab.placeholder.example.5": "Implement quicksort in Python",
   "newtab.send": "Send",
   "newtab.send.tooltip": "Send (Enter)",
-  "newtab.refresh": "Refresh",
   "newtab.openOptions": "Open Hermes options",
   "newtab.history": "History",
   "newtab.latest": "Latest",
@@ -417,8 +454,40 @@ export const en = {
   "newtab.relative.hAgo": "{n}h ago",
   "newtab.relative.dAgo": "{n}d ago",
 
+  // Home shortcuts strip
+  "newtab.shortcuts.title": "Shortcuts",
+  "newtab.shortcuts.add": "Add",
+  "newtab.shortcuts.add.tooltip": "Add a shortcut",
+  "newtab.shortcuts.remove": "Remove",
+  "newtab.shortcuts.rename": "Rename",
+  "newtab.shortcuts.manage": "Manage",
+  "newtab.shortcuts.manage.tooltip": "Manage shortcuts",
+  "newtab.shortcuts.manage.title": "Manage shortcuts",
+  "newtab.shortcuts.manage.close": "Close",
+  "newtab.shortcuts.manage.moveUp": "Move up",
+  "newtab.shortcuts.manage.moveDown": "Move down",
+  "newtab.shortcuts.manage.listEmpty":
+    "No shortcuts yet. Add your first one above.",
+  "newtab.shortcuts.add.dialog.title": "Add a shortcut",
+  "newtab.shortcuts.add.dialog.urlLabel": "URL",
+  "newtab.shortcuts.add.dialog.urlPlaceholder": "https://example.com",
+  "newtab.shortcuts.add.dialog.titleLabel": "Name",
+  "newtab.shortcuts.add.dialog.titlePlaceholder":
+    "Leave empty to use the page title",
+  "newtab.shortcuts.add.dialog.useCurrentTab": "Use current active tab",
+  "newtab.shortcuts.add.dialog.confirm": "Add",
+  "newtab.shortcuts.add.dialog.cancel": "Cancel",
+  "newtab.shortcuts.add.invalidUrl":
+    "Enter a valid URL including http:// or https://.",
+  "newtab.shortcuts.empty":
+    "No shortcuts yet — click ⚙ Manage on the right to add your first one.",
+
+  // Wallpaper
+  "newtab.wallpaper.cycle": "Next wallpaper",
+
   // Chat tab
   "chat.title": "Hermes chat",
+  "chat.goHome": "Back to home",
   "chat.newChat": "Start a new chat",
   "chat.placeholder": "Send a message…",
   "chat.openOptions": "Open Hermes options",
@@ -440,6 +509,29 @@ export const en = {
   "chat.loadingSessions": "Loading sessions…",
   "chat.noMatches": "No matches.",
   "chat.noSessions": "No saved sessions yet.",
+
+  // Composer quick actions — chip strip
+  "composer.quick.empty.tooltip":
+    "Type something first, then tap a quick action to wrap it in a preset prompt.",
+  "composer.quick.translate.label": "Translate",
+  "composer.quick.translate.tooltip":
+    "Translate between Chinese and English (auto-detect)",
+  "composer.quick.translate.template":
+    "Translate the following text. If it is in English, translate to Simplified Chinese; otherwise translate to English. Preserve the original tone and any code blocks unchanged. Reply with only the translation, no preamble.\n\n{input}",
+  "composer.quick.summarize.label": "Summarize",
+  "composer.quick.summarize.tooltip": "Summarize the text concisely",
+  "composer.quick.summarize.template":
+    "Summarize the following concisely. Lead with the single most important point, then 3–5 short bullet points if appropriate. Reply in the same language as the input.\n\n{input}",
+  "composer.quick.polish.label": "Polish",
+  "composer.quick.polish.tooltip":
+    "Polish the text for clarity and tone (same language)",
+  "composer.quick.polish.template":
+    "Polish the following text to be clearer, more natural, and grammatically correct. Keep the original language and meaning; do not add new information. Reply with only the polished text.\n\n{input}",
+  "composer.quick.explain.label": "Explain",
+  "composer.quick.explain.tooltip":
+    "Explain what this means / what this code does",
+  "composer.quick.explain.template":
+    "Explain the following clearly. If it is code, describe what it does step by step and call out any non-obvious behavior. If it is prose or a concept, define the key terms first, then walk through the idea. Reply in the same language as the input.\n\n{input}",
 } as const;
 
 export type MessageKey = keyof typeof en;

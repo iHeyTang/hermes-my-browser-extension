@@ -7,7 +7,7 @@
  * those files (it holds the fcntl lock and runs the injection scanner).
  */
 
-import { ATTACHMENT_HTTP_BASE } from "../background/config";
+import { BACKPLANE_HTTP_BASE } from "../background/config";
 
 export type HermesMemoryTarget = "memory" | "user";
 
@@ -70,7 +70,7 @@ function emptyEntries(target: HermesMemoryTarget, error: string): HermesMemoryEn
 
 export async function getHermesMemoryList(): Promise<HermesMemoryListResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/memories`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/memories`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as HermesMemoryListResponse;
     if (!res.ok || data.ok === false) {
@@ -86,7 +86,7 @@ export async function getHermesMemoryTarget(
   target: HermesMemoryTarget,
 ): Promise<HermesMemoryEntries> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/memories/${target}`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/memories/${target}`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as HermesMemoryEntries;
     if (!res.ok || data.ok === false) {

@@ -6,9 +6,10 @@
  *
  *   1. Size cap (matches Python `MAX_ATTACHMENT_BYTES`).
  *
- *   2. Upload the *full* bytes: side panel → `fetch(ATTACHMENT_HTTP_BASE/attach)`
- *      (raw POST body) to the bridge process — same on-disk layout as the
- *      Python `attachment.put` handler; there is no WebSocket / sendMessage
+ *   2. Upload the *full* bytes: side panel →
+ *      `fetch(BACKPLANE_HTTP_BASE/hermes/attachments)` (raw POST body) to
+ *      the backplane process — same on-disk layout as the Python
+ *      `attachment.put` handler; there is no WebSocket / sendMessage
  *      upload path in the extension.
  *
  *   3. Optional preview (thumbnail / text snippet) *after* upload, with
@@ -25,7 +26,7 @@
  * every type.
  */
 
-import { ATTACHMENT_HTTP_BASE } from "~background/config";
+import { BACKPLANE_HTTP_BASE } from "~background/config";
 import { shortId } from "~lib/utils";
 
 import type {
@@ -48,7 +49,7 @@ const IMAGE_REENCODE_QUALITY = 0.85;
 
 /** Previews are best-effort; never block the bridge upload on them. */
 const PREVIEW_BUDGET_MS = 20_000;
-/** Upper bound for `fetch(/attach)` so the composer cannot spin forever. */
+/** Upper bound for `fetch(/hermes/attachments)` so the composer cannot spin forever. */
 const PUT_MESSAGE_BUDGET_MS = 130_000;
 
 const PREVIEW_TIMED_OUT = Symbol("previewTimedOut");
@@ -403,7 +404,8 @@ interface UploadResponse {
 }
 
 /**
- * POST raw bytes to bridge HTTP (`/attach`) — sole upload path for composer files.
+ * POST raw bytes to backplane HTTP (`/hermes/attachments`) — sole upload
+ * path for composer files.
  */
 async function uploadBlobViaAttachHttp(
   blob: Blob,
@@ -417,7 +419,7 @@ async function uploadBlobViaAttachHttp(
     name,
     mime: ctype,
   });
-  const url = `${ATTACHMENT_HTTP_BASE.replace(/\/$/, "")}/attach?${q.toString()}`;
+  const url = `${BACKPLANE_HTTP_BASE.replace(/\/$/, "")}/hermes/attachments?${q.toString()}`;
   const ctrl = new AbortController();
   const tid = setTimeout(() => ctrl.abort(), PUT_MESSAGE_BUDGET_MS);
   try {

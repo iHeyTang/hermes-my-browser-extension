@@ -68,7 +68,8 @@
       "downloads",
       "unlimitedStorage",
       "declarativeNetRequestWithHostAccess",
-      "bookmarks"
+      "bookmarks",
+      "favicon"
     ],
     "host_permissions": [
       "<all_urls>"

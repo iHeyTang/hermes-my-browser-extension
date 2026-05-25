@@ -3,13 +3,28 @@
  * Centralised so timing/endpoints can be tuned in one place.
  */
 
+/**
+ * WebSocket hub for `my_browser_*` tool calls. Hosted by the
+ * `hermes-plugin-browser-tools` plugin (env `HERMES_BROWSER_TOOLS_PORT`,
+ * default 9393).
+ */
 export const BRIDGE_URL = "ws://127.0.0.1:9393";
 
 /**
- * Side-panel file uploads hit this first (`POST /attach` raw body). Started by
- * `python -m bridge.server` (default port 9394, env `MY_BROWSER_ATTACH_HTTP_PORT`).
+ * Local HTTP base for the `hermes-plugin-http-backplane` plugin (env
+ * `HERMES_BACKPLANE_PORT`, default 9394). Hosts three lanes:
+ *   - `/extension/*`          — extension-private (file uploads etc.)
+ *   - `/hermes/*`             — proxies to Hermes core (cron, models, …)
+ *   - `/integrations/<name>/*` — third-party plugin routes
  */
-export const ATTACHMENT_HTTP_BASE = "http://127.0.0.1:9394";
+export const BACKPLANE_HTTP_BASE = "http://127.0.0.1:9394";
+
+/**
+ * @deprecated Renamed to BACKPLANE_HTTP_BASE. Kept as alias so any
+ * out-of-tree consumer keeps working through the split; remove in a
+ * follow-up release once all callers have migrated.
+ */
+export const ATTACHMENT_HTTP_BASE = BACKPLANE_HTTP_BASE;
 
 export const RECONNECT_MS = 3000;
 
@@ -17,6 +32,17 @@ export const RECONNECT_MS = 3000;
 // message activity resets that timer, so a ~20s heartbeat keeps both the SW
 // and the WS alive indefinitely.
 export const HEARTBEAT_MS = 20_000;
+
+/**
+ * Maximum interval the SW will tolerate between inbound frames before
+ * deciding the bridge has gone silent and the WebSocket is half-open.
+ * Three heartbeats with no traffic of any kind triggers a recycle: close
+ * the WS (which flips `readyState` to CLOSED, fires onclose, and lets the
+ * normal reconnect path take over). Tighter than the OS TCP keepalive
+ * default (hours) and loose enough that transient slowness doesn't false
+ * positive. See `bridge.ts:startHeartbeat`.
+ */
+export const HEARTBEAT_TIMEOUT_MS = HEARTBEAT_MS * 3;
 
 export const KEEPALIVE_ALARM = "hermes-keepalive";
 export const KEEPALIVE_PERIOD_MIN = 0.5;

@@ -7,7 +7,7 @@
  * current agent actually has access to.
  */
 
-import { ATTACHMENT_HTTP_BASE } from "../background/config";
+import { BACKPLANE_HTTP_BASE } from "../background/config";
 
 /**
  * Where a skill came from:
@@ -96,7 +96,7 @@ const EMPTY_TOTALS: HermesSkillsTotals = {
 
 export async function getHermesSkills(): Promise<HermesSkillsResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/skills`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/skills`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as HermesSkillsResponse;
     if (!res.ok || data.ok === false) {
@@ -181,7 +181,7 @@ export async function getHermesSkillFiles(
   name: string,
 ): Promise<HermesSkillFilesResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/skills/${encodeURIComponent(name)}/files`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/skills/${encodeURIComponent(name)}/files`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as HermesSkillFilesResponse;
     if (!res.ok || data.ok === false) {
@@ -225,7 +225,7 @@ export async function postHermesSkillToggle(
   enabled: boolean,
 ): Promise<HermesSkillToggleResponse> {
   try {
-    const url = `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/skills/toggle`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/skills/toggle`;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -247,7 +247,7 @@ export async function getHermesSkillFile(
 ): Promise<HermesSkillFileResponse> {
   try {
     const url =
-      `${stripSlash(ATTACHMENT_HTTP_BASE)}/hermes/skills/${encodeURIComponent(name)}/file` +
+      `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/skills/${encodeURIComponent(name)}/file` +
       `?path=${encodeURIComponent(path)}`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as HermesSkillFileResponse;

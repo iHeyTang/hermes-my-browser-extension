@@ -173,12 +173,31 @@ function TopBar({
   const { t } = useT();
   return (
     <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-muted/15 px-4 py-2">
-      <div className="flex items-center gap-2.5">
+      <button
+        type="button"
+        onClick={() => {
+          // Send the user back to the new-tab home. Same in-place
+          // navigation pattern `newtab/index.tsx#goToChatTab` uses to
+          // get here in the first place — this is just the reverse leg.
+          try {
+            window.location.replace(chrome.runtime.getURL("newtab.html"));
+          } catch {
+            // Best-effort.
+          }
+        }}
+        title={t("chat.goHome")}
+        aria-label={t("chat.goHome")}
+        className={cn(
+          "flex items-center gap-2.5 rounded-md px-1.5 py-0.5",
+          "transition-colors hover:bg-muted",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        )}
+      >
         <HermesLogo size={20} />
         <p className="text-sm font-semibold tracking-tight">
           {t("chat.title")}
         </p>
-      </div>
+      </button>
       <div className="flex items-center gap-1">
         <button
           type="button"

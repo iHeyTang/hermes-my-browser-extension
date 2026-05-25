@@ -10,8 +10,9 @@
  *     execute via the `HANDLERS` registry; we reply `{id, result|error}`.
  *   - Outbound *from us* (SW): `sendRequest(method, params)` allocates a
  *     fresh id, sends the request, and resolves a Promise once the matching
- *     `{id, result|error}` arrives. Used for side-panel `attachment.delete`
- *     / `attachment.deleteSession` (uploads use bridge HTTP `POST /attach`).
+ *     `{id, result|error}` arrives. The WS bridge no longer carries
+ *     attachment messages — uploads / deletes both hit the HTTP backplane
+ *     plugin directly (`POST/DELETE /hermes/attachments`).
  *
  *   `handleCommand` demuxes on whether the frame carries `method`:
  *     - present  → inbound request, dispatch handler
@@ -19,9 +20,29 @@
  */
 
 import { closeAgentWindow } from "./agent-window";
-import { BRIDGE_URL, HEARTBEAT_MS, RECONNECT_MS } from "./config";
+import {
+  BRIDGE_URL,
+  HEARTBEAT_MS,
+  HEARTBEAT_TIMEOUT_MS,
+  RECONNECT_MS,
+} from "./config";
 import { HANDLERS } from "./handlers";
 import { state, syncState } from "./state";
+
+// ---------------------------------------------------------------------------
+// Read-side liveness
+//
+// `lastSeenAt` is the wall-clock time of the most recent frame the SW
+// received from the bridge — any frame, including pongs and normal relay
+// traffic. The heartbeat tick consults this to detect a half-open WS:
+// `readyState` alone can lie for many minutes when the bridge silently
+// dies (process killed, NAT idle-out, OS hung), because the protocol
+// doesn't surface that to the browser until the OS-level TCP timeout
+// finally fires. See `getCurrentState()` in `state.ts` — its accuracy
+// depends on this check actively pruning stale OPEN sockets.
+// ---------------------------------------------------------------------------
+
+let lastSeenAt = 0;
 
 // ---------------------------------------------------------------------------
 // Outbound request bookkeeping
@@ -83,6 +104,11 @@ export function connect() {
 
   ws.onopen = () => {
     ws.send(JSON.stringify({ role: "ui" }));
+    // Seed liveness here: the bridge just accepted our connection, so the
+    // peer is provably alive at this instant. Without seeding, the first
+    // heartbeat tick would compute staleness against `lastSeenAt = 0` and
+    // false-positive-recycle immediately.
+    lastSeenAt = Date.now();
     if (state.reconnectTimer) {
       clearTimeout(state.reconnectTimer);
       state.reconnectTimer = null;
@@ -92,6 +118,12 @@ export function connect() {
   };
 
   ws.onmessage = (event) => {
+    // Stamp liveness for ANY inbound frame (pongs, normal relay traffic,
+    // attachment cleanup replies, …). The heartbeat tick reads this to
+    // decide whether the bridge has gone quiet. Doing it here — before
+    // dispatch — means even frames we drop in `handleCommand` (e.g. pongs)
+    // still count as proof of life.
+    lastSeenAt = Date.now();
     void handleCommand(event.data as string);
   };
 
@@ -115,6 +147,10 @@ export function connect() {
     }
     state.ws = null;
     stopHeartbeat();
+    // Reset liveness so the next `connect()` doesn't read a stale stamp
+    // from the previous socket (which would skip the seed in `onopen` and
+    // confuse the first heartbeat tick).
+    lastSeenAt = 0;
     // Anyone awaiting an in-flight outbound request needs to know the wire
     // dropped so they can surface a useful error instead of timing out.
     rejectAllPending("Bridge connection closed");
@@ -166,6 +202,26 @@ export function startHeartbeat() {
   stopHeartbeat();
   state.heartbeatTimer = setInterval(() => {
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    // Read-side staleness check. If the bridge hasn't sent us a single
+    // frame (pong, relay traffic, anything) within HEARTBEAT_TIMEOUT_MS,
+    // assume the connection is half-open and tear it down so the normal
+    // onclose → scheduleReconnect path kicks in. This is what makes
+    // `getCurrentState()` honest: without it, `readyState === OPEN` can
+    // outlive a dead bridge by minutes.
+    const idleMs = Date.now() - lastSeenAt;
+    if (lastSeenAt > 0 && idleMs > HEARTBEAT_TIMEOUT_MS) {
+      console.warn(
+        "[hermes-bridge] No frame from bridge in %dms (> %dms); recycling WS",
+        idleMs,
+        HEARTBEAT_TIMEOUT_MS,
+      );
+      try {
+        state.ws.close(4001, "heartbeat stale");
+      } catch {
+        // Ignore.
+      }
+      return;
+    }
     try {
       state.ws.send(JSON.stringify({ type: "ping", t: Date.now() }));
     } catch (e) {

@@ -2,6 +2,8 @@ import {
   ArrowUp,
   Bot,
   Brain,
+  ChevronDown,
+  ChevronUp,
   Disc,
   ExternalLink,
   File as FileIcon,
@@ -65,6 +67,7 @@ import {
   CHAT_PORT_NAME,
   type BgToClientMessage,
   type ChatRuntimeState,
+  type SnapshotFrame,
   type StreamEvent,
 } from "../background/chat/types";
 import {
@@ -178,6 +181,15 @@ interface UiMessage extends ChatMessage {
   agentFinalTitle?: string;
   /** Streamed reasoning trace (markdown) for this assistant turn. */
   streamVerbose?: string;
+  /**
+   * Pure reasoning / "thinking" text for this turn — separate from
+   * ``streamVerbose`` which mixes reasoning with tool-arg dumps for the
+   * developer verbose toggle. Rendered as a collapsible chip in the
+   * assistant bubble so it doesn't share the body text's typography.
+   * Populated live by the engine path (``applyVerboseToAssistant``) and
+   * on reload from Hermes' ``reasoning_content`` column.
+   */
+  reasoning?: string;
   /** Live tool-progress events from the gateway, rendered as chips. */
   hermesToolProgress?: HermesToolProgress[];
   /**
@@ -556,9 +568,11 @@ export default function SidePanel({
   function applyVerboseToAssistant(): void {
     const v = verboseStateRef.current;
     if (!v) return;
-    const parts: string[] = [];
+    // Reasoning rides on its own field so the bubble renderer can chip it
+    // separately from the body text. ``streamVerbose`` now carries only
+    // the tool-args markdown (still hidden behind the dev verbose toggle).
     const rs = v.reasoning.trimEnd();
-    if (rs) parts.push(rs);
+    const parts: string[] = [];
     const named = v.tools.filter((t) => t.name);
     if (named.length > 0) {
       const blocks = named.map((t) => {
@@ -583,6 +597,7 @@ export default function SidePanel({
           ? {
               ...m,
               streamVerbose: md,
+              reasoning: rs || undefined,
               hermesToolProgress: progress,
               assistantTimeline: timelineSnapshot,
             }
@@ -643,44 +658,34 @@ export default function SidePanel({
     }
   }
 
-  function handleSnapshot(
-    sessionId: string,
-    state: ChatRuntimeState | null,
-  ): void {
+  function handleSnapshot(frame: SnapshotFrame): void {
+    const { sessionId, kind } = frame;
     if (sessionId !== sessions.activeId) return;
-    if (!state) {
-      // No runtime state for this session. Whatever the persisted
-      // `streaming` flag said, the panel-level busy must drop now —
-      // otherwise switching to a fresh session keeps the composer
-      // disabled from a previous session's streaming state.
+
+    if (kind === "absent") {
+      // SW has no record of this session. Two situations land here:
+      //   1. User switched to a fresh / never-submitted session
+      //      → panel-level state must drop so the composer reflects
+      //        the new session.
+      //   2. A subscribe-snapshot round-trip raced ahead of our own
+      //      `submit` (typical of the new-tab → chat handoff). The
+      //      SW will produce real state imminently and emit `begin`,
+      //      so suppress hygiene here to avoid a busy/UI flicker.
+      // `pendingTurnRef` is set the instant runChatTurn posts submit,
+      // so it's the authoritative "we're mid-submission" signal.
+      if (pendingTurnRef.current?.sessionId === sessionId) return;
       setBusy(false);
       setPendingApprovals([]);
       setActiveRunId(null);
       setApprovalInFlight({});
       setApprovalError(null);
-      // If the persisted log still carries a `streaming: true` flag
-      // (panel was reloaded after the SW was killed mid-stream and
-      // forgot the runtime), sanitize it here — otherwise the bubble
-      // spins forever.
-      sessions.setActiveMessages((prev) => {
-        const dirty = (prev as UiMessage[]).some((m) => m.streaming);
-        if (!dirty) return prev;
-        return (prev as UiMessage[]).map((m) =>
-          m.streaming
-            ? {
-                ...m,
-                streaming: false,
-                content: m.content
-                  ? m.content + "\n\n[interrupted]"
-                  : "[interrupted]",
-              }
-            : m,
-        );
-      });
       return;
     }
+
+    // Live / interrupted / completed — SW state is authoritative.
     // Rebuild local accumulators from the snapshot, then overlay
     // accumulated content onto the matching assistant bubble.
+    const { state } = frame;
     hydrateLocalFromSnapshot(state);
     setBusy(state.streaming);
     setPendingApprovals(state.pendingApprovals ?? []);
@@ -688,12 +693,10 @@ export default function SidePanel({
     sessions.setActiveMessages((prev) => {
       const next = (prev as UiMessage[]).map((m) => {
         if (m.uiId !== state.assistantUiId) return m;
-        const interrupted = !state.streaming && state.error;
+        const suffix = kind === "interrupted" ? "\n\n[interrupted]" : "";
         return {
           ...m,
-          content:
-            state.assistantText +
-            (interrupted ? "\n\n[interrupted]" : ""),
+          content: state.assistantText + suffix,
           streaming: state.streaming,
           // Carry the chip URL the engine captured at end-of-turn through to
           // any panel that opens AFTER the stream finished. While the panel
@@ -710,7 +713,7 @@ export default function SidePanel({
       return next;
     });
     applyVerboseToAssistant();
-    if (state.error && !state.streaming) {
+    if (kind === "interrupted" && state.error) {
       setError({
         message: state.error.message,
         hint: state.error.hint,
@@ -775,6 +778,11 @@ export default function SidePanel({
         return next;
       });
     }
+    // Force-persist the just-finished turn so a tab close / navigation
+    // within the 250ms debounce window doesn't strand the messages in
+    // memory only. Without this, the conversation looks empty when the
+    // session is re-opened from another surface.
+    void sessions.flushPersist();
     setBusy(false);
     resolvePendingTurn(sessionId);
   }
@@ -807,6 +815,9 @@ export default function SidePanel({
         ),
       );
     }
+    // Same rationale as `handleStreamDone`: persist the aborted state
+    // immediately so the `[stopped]` tail actually reaches storage.
+    void sessions.flushPersist();
     setBusy(false);
     rejectPendingTurn(sessionId, new DOMException("aborted", "AbortError"));
   }
@@ -985,7 +996,7 @@ export default function SidePanel({
   useEffect(() => {
     portMessageRef.current = (raw: BgToClientMessage) => {
       if (!raw || typeof raw !== "object") return;
-      if (raw.type === "snapshot") handleSnapshot(raw.sessionId, raw.state);
+      if (raw.type === "snapshot") handleSnapshot(raw);
       else if (raw.type === "event") handleStreamEvent(raw.sessionId, raw.event);
     };
   });
@@ -1310,14 +1321,14 @@ export default function SidePanel({
     });
   }, [showStreamDetails]);
 
-  // Recovery for persisted `streaming: true` flags is now driven by the
-  // snapshot the SW returns on `subscribe`: if there's no runtime state for
-  // the session, `handleSnapshot` marks any still-streaming bubble as
-  // `[interrupted]`; if there IS runtime state, the bubble is rehydrated
-  // with the accumulated content from the still-running (or just-finished)
-  // background stream. The old eager sanitize-on-activate effect that lived
-  // here used to wipe partial text before the snapshot could arrive — see
-  // `handleSnapshot` for the replacement.
+  // Lifecycle of an assistant bubble is owned by the SW snapshot.
+  // `handleSnapshot` dispatches on a tagged `kind` (absent / live /
+  // interrupted / completed) — see `SnapshotFrame` in
+  // background/chat/types.ts. The panel no longer infers anything from
+  // `m.streaming` itself: that flag is volatile (see
+  // lib/sessions/store.ts), set only as an in-memory hint between
+  // `runChatTurn` appending the bubble and the SW's first event, and
+  // re-derived from the snapshot for any pre-existing in-flight stream.
 
   // Auto-scroll on new content.
   useEffect(() => {
@@ -3187,6 +3198,160 @@ function bubbleTextContent(content: unknown): string {
 // reply is never lost. Sticky elements are bounded by their parent, so once
 // the next turn enters view its own user bubble takes over the pin without
 // any JS / scroll-listener gymnastics.
+/**
+ * Sticky user-question strip with a static height cap.
+ *
+ * Earlier iterations tried a scroll-driven gradual collapse (interpolating
+ * ``max-height`` as the user scrolled past the bubble's natural slot).
+ * That approach fights ``position: sticky``: changing the bubble's
+ * height during scroll changes its layout-flow space too, which shifts
+ * content below by the same amount, and the resulting motion compounds
+ * with the user's scroll input as visible jitter. No amount of deadband
+ * tuning made it feel stable.
+ *
+ * The current approach instead applies a hard ``max-height`` from the
+ * start — long bubbles are *always* capped, regardless of scroll. When
+ * the content overflows the cap, a fade overlay and a "more" button
+ * appear at the bottom; clicking expands the bubble to its natural
+ * height (still pinned via sticky) and reveals a small "collapse"
+ * button. No scroll listener, no layout feedback loop, no flicker.
+ *
+ * Short bubbles (whose content fits within the cap) render entirely
+ * unmodified — no affordances, no fade, no border-radius surprises.
+ */
+
+/**
+ * Capped height for the user bubble in its default (collapsed) state —
+ * about three lines of text-sm plus the bubble's own vertical padding.
+ * Short enough that even a long pasted prompt doesn't dominate the
+ * panel, but tall enough to convey "this is the question" at a glance.
+ *
+ * The Tailwind class and px constant must stay in sync: the class is
+ * used in markup for the visual cap, and the px value is used to
+ * decide whether the natural content actually exceeds that cap.
+ */
+const CAPPED_HEIGHT_CLASS = "max-h-24";
+const CAPPED_HEIGHT_PX = 96; // 6rem
+
+/**
+ * Cap used in the expanded state. Without a cap here, expanding a very
+ * long message would grow the bubble's flow space to its full natural
+ * height — and because the bubble is ``position: sticky``, that pushes
+ * all the assistant content below down, often off-screen. 60vh leaves
+ * at least 40% of the viewport for the answer; anything longer than
+ * that scrolls inside the bubble (``overflow-y-auto`` in expanded mode).
+ */
+const EXPANDED_MAX_HEIGHT_CLASS = "max-h-[60vh]";
+
+function UserStickyBubble({ m }: { m: UiMessage }) {
+  const innerRef = useRef<HTMLDivElement>(null);
+  const [overflowed, setOverflowed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  // Overflow detection compares the bubble's natural content height to
+  // the *fixed* cap (40vh in px), NOT the wrapper's current rendered
+  // height. The earlier version compared to wrapper.clientHeight, which
+  // produced a feedback loop: expanding the wrapper made clientHeight
+  // grow to match scrollHeight, the next measure decided "not
+  // overflowing", and the auto-collapse effect snapped it back. By
+  // measuring against the constant cap we always agree on "does the
+  // content actually exceed 40vh", regardless of whether we're
+  // currently displaying it expanded or capped.
+  useLayoutEffect(() => {
+    const inner = innerRef.current;
+    if (!inner) return;
+    const measure = () => {
+      // 1 px slack absorbs sub-pixel rounding so we don't toggle
+      // overflowed on/off purely from layout drift.
+      setOverflowed(inner.scrollHeight > CAPPED_HEIGHT_PX + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, []);
+
+  // Auto-collapse when the bubble no longer overflows (e.g., content
+  // shrank below the cap). Safe now that overflow detection isn't
+  // self-referential.
+  useEffect(() => {
+    if (!overflowed && expanded) setExpanded(false);
+  }, [overflowed, expanded]);
+
+  const isClipping = overflowed && !expanded;
+
+  return (
+    <div className="sticky top-0 z-20 -mx-3 bg-background px-3 pb-1">
+      {/* Outer ``relative`` wrapper hosts the affordances (fade, toggle
+          button). Crucially they live OUTSIDE the scroll container
+          below — when the bubble is expanded and the user scrolls its
+          internal overflow, the affordances stay anchored to the
+          bubble's visible bounds instead of scrolling away with the
+          content. ``group`` exposes the hover state to the toggle's
+          opacity transition. */}
+      <div className="group relative">
+        <div
+          // ``rounded-xl`` matches the inner Bubble's own border-radius
+          // so the overflow clip follows the bubble's rounded corners.
+          // Collapsed: hard clip + ``max-h-24``. Expanded: cap at
+          // ``max-h-[60vh]`` with internal scroll so a very long prompt
+          // doesn't push the assistant content below off-screen.
+          className={cn(
+            "rounded-xl",
+            expanded
+              ? `${EXPANDED_MAX_HEIGHT_CLASS} overflow-y-auto`
+              : `${CAPPED_HEIGHT_CLASS} overflow-hidden`,
+          )}
+        >
+          <div ref={innerRef}>
+            <Bubble m={m} />
+          </div>
+        </div>
+        {/* Bottom fade — only while clipping. ``from-secondary`` matches
+            the user bubble's own background colour so the gradient
+            blends cleanly without showing a seam. */}
+        {isClipping && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-8 rounded-b-xl bg-gradient-to-t from-secondary to-transparent"
+          />
+        )}
+        {/* Single toggle button. Same position, same size, same colour
+            in both states — only the chevron direction flips. Pinned
+            to the bubble's top-right corner outside the scroll region
+            so it never drifts when the user scrolls inside the
+            expanded bubble. Idle at 30% opacity; hovering anywhere on
+            the bubble (or focusing the button) brings it back to full
+            opacity so it's discoverable without being loud. */}
+        {overflowed && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? "Collapse" : "Show full message"}
+            aria-label={
+              expanded ? "Collapse user message" : "Show full user message"
+            }
+            className={cn(
+              "absolute right-2 top-2 inline-flex h-5 w-5 items-center justify-center",
+              "rounded-full border border-border/60 bg-background/80 text-muted-foreground",
+              "opacity-30 transition-opacity",
+              "group-hover:opacity-100 focus-visible:opacity-100",
+              "hover:bg-background hover:text-foreground",
+              "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+            )}
+          >
+            {expanded ? (
+              <ChevronUp className="h-3 w-3" aria-hidden />
+            ) : (
+              <ChevronDown className="h-3 w-3" aria-hidden />
+            )}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MessageTurns({
   messages,
   showStreamDetails,
@@ -3217,18 +3382,7 @@ function MessageTurns({
           key={turn.user?.uiId ?? `turn-${i}`}
           className="space-y-2"
         >
-          {turn.user && (
-            // The strip extends edge-to-edge via `-mx-3` (cancelling the
-            // parent's `p-3` horizontal padding) so the opaque background
-            // fully covers any assistant content scrolling underneath when
-            // the bubble is pinned — no blur / translucency, just a hard
-            // mask. We bump z-index above Streamdown's in-bubble code-block
-            // toolbar (`z-10`) so the pinned question always wins the
-            // stacking contest while scrolling through long replies.
-            <div className="sticky top-0 z-20 -mx-3 bg-background px-3 pb-1">
-              <Bubble m={turn.user} />
-            </div>
-          )}
+          {turn.user && <UserStickyBubble m={turn.user} />}
           {turn.replies.map((m) => (
             <Bubble key={m.uiId} m={m} showStreamDetails={showStreamDetails} />
           ))}
@@ -3817,6 +3971,7 @@ function Bubble({
   if (m.role === "assistant") {
     const bodyText = bubbleTextContent(m.content);
     const verboseText = bubbleTextContent(m.streamVerbose);
+    const reasoningText = bubbleTextContent(m.reasoning).trim();
     const toolProgress = m.hermesToolProgress ?? [];
     const timeline = m.assistantTimeline ?? [];
     const hasTimeline = showStreamDetails && timeline.length > 0;
@@ -3826,6 +3981,20 @@ function Bubble({
       showStreamDetails && !hasTimeline && toolProgress.length > 0;
     const hasVerboseBlock =
       hasReasoningBlock || hasLegacyToolList || hasTimeline;
+    // An assistant turn that only emitted tool calls (and now sits with
+    // no text body, no reasoning, no in-flight stream) is a pure tool-
+    // dispatch message. With the verbose toggle off it has literally
+    // nothing to render — the bubble would be an empty padded box. Skip
+    // it entirely so the surrounding user messages read as one
+    // conversation instead of being interrupted by gaps.
+    if (
+      !m.streaming
+      && bodyText.trim().length === 0
+      && reasoningText.length === 0
+      && !hasVerboseBlock
+    ) {
+      return null;
+    }
     // While the request is in flight but no token has arrived yet, the bubble
     // would otherwise be just Streamdown's bare ● caret on an empty line —
     // which reads as a stray glyph rather than a status. Replace that with an
@@ -3867,6 +4036,23 @@ function Bubble({
     );
     return (
       <div className="min-w-0 px-1 py-1 text-sm">
+        {reasoningText.length > 0 && (
+          // Reasoning trace: inline above the body, much smaller + heavily
+          // muted so it reads as a side-channel artifact rather than part
+          // of the answer. Body text is text-sm (14px); reasoning sits at
+          // ~10.5px so the size gap alone signals "this is metadata".
+          // Always rendered (not gated on the verbose toggle) so
+          // historical turns keep their thinking visible on reload.
+          <Streamdown
+            mode={m.streaming ? "streaming" : "static"}
+            parseIncompleteMarkdown
+            caret="circle"
+            isAnimating={!!m.streaming}
+            className="chat-md mb-2 break-words text-[10.5px] leading-snug text-muted-foreground/55"
+          >
+            {reasoningText}
+          </Streamdown>
+        )}
         {hasReasoningBlock && (
           <Streamdown
             mode={m.streaming ? "streaming" : "static"}

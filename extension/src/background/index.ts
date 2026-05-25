@@ -7,6 +7,7 @@
  */
 
 import {
+  BACKPLANE_HTTP_BASE,
   KEEPALIVE_ALARM,
   KEEPALIVE_PERIOD_MIN,
   USERSCRIPT_UPDATE_ALARM,
@@ -553,48 +554,48 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     // ---------------------------------------------------------------------
-    // Side-panel attachment cleanup → Python (WebSocket bridge).
+    // Side-panel attachment cleanup → backplane HTTP.
     //
-    // Uploads go directly from the side panel to the bridge HTTP server
-    // (`POST /attach`); only delete / deleteSession round-trip through here.
+    // Uploads, deletes, and per-session purges all hit the same lane
+    // (`/hermes/attachments*` on hermes-plugin-http-backplane). The WS bridge no
+    // longer carries `attachment.*` messages — that responsibility lives
+    // entirely on the HTTP backplane plugin now.
     // ---------------------------------------------------------------------
 
     if (action === "attachment.delete") {
       try {
-        if (!isBridgeConnected()) {
-          // Silent no-op when disconnected: the UI calls this opportunistically
-          // on chip-remove and shouldn't yell at the user about an offline
-          // bridge they may not even know exists.
-          sendResponse({ ok: true, deleted: false, reason: "not connected" });
-          return;
-        }
         const r = request as Record<string, unknown>;
         const path = typeof r.path === "string" ? r.path : "";
         if (!path) {
           sendResponse({ ok: false, error: "missing path" });
           return;
         }
-        const result = await sendBridgeRequest<{
+        const url =
+          `${BACKPLANE_HTTP_BASE.replace(/\/$/, "")}/hermes/attachments` +
+          `?path=${encodeURIComponent(path)}`;
+        const res = await fetch(url, { method: "DELETE" });
+        if (!res.ok) {
+          // Treat connection errors as silent no-op — UI calls this
+          // opportunistically on chip-remove and shouldn't surface offline
+          // backplane errors to the user.
+          sendResponse({ ok: true, deleted: false, reason: `http ${res.status}` });
+          return;
+        }
+        const result = (await res.json()) as {
           deleted: boolean;
           reason?: string;
-        }>("attachment.delete", { path }, 10_000);
+        };
         sendResponse({ ok: true, ...result });
       } catch (e) {
-        sendResponse({ ok: false, error: String((e as Error)?.message || e) });
+        // Same rationale: any transport failure is reported as a quiet
+        // "not deleted" rather than an error toast.
+        sendResponse({ ok: true, deleted: false, reason: String((e as Error)?.message || e) });
       }
       return;
     }
 
     if (action === "attachment.deleteSession") {
-      // Wipe an entire per-session attachments directory in one call —
-      // wired to the side panel's "Delete chat" affordance so we don't
-      // leak files for conversations the user has thrown away. Same
-      // silent-noop-when-disconnected stance as `attachment.delete`.
       try {
-        if (!isBridgeConnected()) {
-          sendResponse({ ok: true, deleted: false, reason: "not connected" });
-          return;
-        }
         const r = request as Record<string, unknown>;
         const session_id =
           typeof r.session_id === "string" ? r.session_id : "";
@@ -602,13 +603,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           sendResponse({ ok: false, error: "missing session_id" });
           return;
         }
-        const result = await sendBridgeRequest<{
+        const url =
+          `${BACKPLANE_HTTP_BASE.replace(/\/$/, "")}/hermes/attachments/session/` +
+          encodeURIComponent(session_id);
+        const res = await fetch(url, { method: "DELETE" });
+        if (!res.ok) {
+          sendResponse({ ok: true, deleted: false, reason: `http ${res.status}` });
+          return;
+        }
+        const result = (await res.json()) as {
           deleted: boolean;
           reason?: string;
-        }>("attachment.deleteSession", { session_id }, 10_000);
+        };
         sendResponse({ ok: true, ...result });
       } catch (e) {
-        sendResponse({ ok: false, error: String((e as Error)?.message || e) });
+        sendResponse({ ok: true, deleted: false, reason: String((e as Error)?.message || e) });
       }
       return;
     }

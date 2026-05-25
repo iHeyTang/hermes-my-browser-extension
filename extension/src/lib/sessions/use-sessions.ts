@@ -100,6 +100,15 @@ export interface SessionsController {
    * current messages.
    */
   touchSession: (id: string, messages: SessionMessage[]) => Promise<void>;
+
+  /**
+   * Immediately persist the active session's messages, skipping the
+   * 250ms debounce. Use this from "turn just completed" boundaries —
+   * a tab close or page navigation right after the turn finishes
+   * would otherwise cancel the pending debounce and lose the last
+   * batch of messages.
+   */
+  flushPersist: () => Promise<void>;
 }
 
 const PERSIST_DEBOUNCE_MS = 250;
@@ -432,12 +441,29 @@ export function useSessions(): SessionsController {
     await flushCurrentMessages();
     const meta = newSessionMeta();
     switchEpochRef.current++;
-    setSessions((prev) => [meta, ...prev]);
-    setOpenTabIds([...openTabIdsRef.current, meta.id]);
+    // Compute the next snapshots from refs so we can both feed them
+    // into React state AND persist them synchronously below. Without
+    // this, only `setSessions` / `setOpenTabIds` schedule the writes
+    // (via the useEffect path), which are fire-and-forget — and if the
+    // caller is about to navigate (the newtab → chat hand-off does),
+    // those writes can lose to the navigation and the chat page wakes
+    // up with stale storage missing the new session.
+    const nextSessions = [meta, ...sessionsRef.current];
+    const nextTabs = [...openTabIdsRef.current, meta.id];
+    setSessions(nextSessions);
+    setOpenTabIds(nextTabs);
     setActiveId(meta.id);
     setActiveMessages([]);
     markSelfWriteActiveId(meta.id);
-    await saveActiveId(meta.id);
+    // Persist everything we just set, in parallel, and await all
+    // before returning. Callers that navigate immediately after
+    // (newtab's `submitToChat`) now have a guaranteed-coherent
+    // storage view when the next page loads.
+    await Promise.all([
+      saveIndex(nextSessions),
+      saveOpenTabIds(nextTabs),
+      saveActiveId(meta.id),
+    ]);
     return meta.id;
   }, [flushCurrentMessages]);
 
@@ -545,6 +571,16 @@ export function useSessions(): SessionsController {
     [],
   );
 
+  // Force-flush the currently active session's messages to storage,
+  // bypassing the 250ms debounce. Used by callers that know the
+  // current state is "final" for this moment in time and shouldn't
+  // wait for idleness — e.g. the sidepanel's stream-done handler, so
+  // a tab close / navigation right after a turn completes doesn't lose
+  // the just-finished message.
+  const flushPersist = useCallback(async (): Promise<void> => {
+    await flushCurrentMessages();
+  }, [flushCurrentMessages]);
+
   // Resolve openTabIds → SessionMeta[], preserving order, dropping any
   // dangling references defensively (shouldn't happen, but cheap insurance).
   const openTabs = openTabIds
@@ -569,5 +605,6 @@ export function useSessions(): SessionsController {
     remove,
     clearActiveMessages,
     touchSession,
+    flushPersist,
   };
 }

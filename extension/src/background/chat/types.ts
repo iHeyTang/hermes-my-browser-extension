@@ -101,9 +101,34 @@ export type ClientToBgMessage =
       approvalId: string;
     };
 
+/**
+ * Snapshot kind tags what the SW knows about this session right now:
+ *
+ *   - `absent`      — SW has no record at all (session never submitted, or
+ *                     the SW restarted without finding anything in session
+ *                     storage). Panel should NOT infer "[interrupted]" from
+ *                     this; it just means "nothing to rehydrate".
+ *   - `live`        — Stream is in flight; `state.streaming === true`.
+ *   - `interrupted` — Stream ended with an error (typical case: SW killed
+ *                     mid-stream, then `hydrateFromStorage` rewrote
+ *                     `streaming → false` with an error). The bubble should
+ *                     render `[interrupted]`.
+ *   - `completed`   — Stream finished cleanly while the panel was not
+ *                     subscribed; merge `assistantText` into the bubble
+ *                     without any suffix.
+ *
+ * Eliminates the previous `state: ChatRuntimeState | null` ambiguity where
+ * `null` had to do double duty for "never started" and "killed mid-stream".
+ */
+export type SnapshotFrame =
+  | { type: "snapshot"; sessionId: string; kind: "absent" }
+  | { type: "snapshot"; sessionId: string; kind: "live"; state: ChatRuntimeState }
+  | { type: "snapshot"; sessionId: string; kind: "interrupted"; state: ChatRuntimeState }
+  | { type: "snapshot"; sessionId: string; kind: "completed"; state: ChatRuntimeState };
+
 /** Background → panel frames. */
 export type BgToClientMessage =
-  | { type: "snapshot"; sessionId: string; state: ChatRuntimeState | null }
+  | SnapshotFrame
   | { type: "event"; sessionId: string; event: StreamEvent };
 
 /**
