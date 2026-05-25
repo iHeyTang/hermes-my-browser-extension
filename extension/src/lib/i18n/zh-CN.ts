@@ -38,6 +38,7 @@ export const zhCN: Messages = {
   "options.nav.skills": "技能",
   "options.nav.memory": "记忆",
   "options.nav.cron": "定时任务",
+  "options.nav.status": "运行状态",
 
   // Preference page
   "options.preference.title": "偏好设置",

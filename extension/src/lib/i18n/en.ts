@@ -43,6 +43,7 @@ export const en = {
   "options.nav.skills": "Skills",
   "options.nav.memory": "Memory",
   "options.nav.cron": "Cron",
+  "options.nav.status": "Status",
 
   // Preference page
   "options.preference.title": "Preference",

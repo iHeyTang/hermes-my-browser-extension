@@ -1,4 +1,5 @@
 import {
+  Activity,
   Bot,
   BrainCircuit,
   Clock,
@@ -41,6 +42,7 @@ import { SettingsGateway } from "./SettingsGateway";
 import { SettingsMemory } from "./SettingsMemory";
 import { SettingsPreferences } from "./SettingsPreferences";
 import { SettingsSkills } from "./SettingsSkills";
+import { SettingsStatus } from "./SettingsStatus";
 
 interface ListResp {
   ok: boolean;
@@ -63,6 +65,7 @@ interface DetailResp {
  * actions on top of all of the above).
  */
 const OPTIONS_MAIN_TABS = [
+  "status",
   "preference",
   "scripts",
   "gateway",
@@ -89,7 +92,7 @@ function mainTabFromLocation(): MainTab {
   if (raw === "hermes-model") {
     return "models";
   }
-  return "scripts";
+  return "status";
 }
 
 export default function Options() {
@@ -124,7 +127,7 @@ export default function Options() {
   }, []);
 
   function onMainTabChange(v: string) {
-    const next = TAB_SET.has(v) ? (v as MainTab) : "scripts";
+    const next = TAB_SET.has(v) ? (v as MainTab) : "status";
     setMainTab(next);
     const base = window.location.pathname + window.location.search;
     if (next === "scripts") {
@@ -230,6 +233,16 @@ export default function Options() {
           <nav className="flex flex-col gap-0.5 p-2">
             <Button
               type="button"
+              variant={mainTab === "status" ? "secondary" : "ghost"}
+              className="w-full justify-start gap-2 font-normal"
+              onClick={() => onMainTabChange("status")}
+            >
+              <Activity className="h-4 w-4 shrink-0 opacity-70" />
+              {t("options.nav.status")}
+            </Button>
+            <Separator className="my-1.5" />
+            <Button
+              type="button"
               variant={mainTab === "preference" ? "secondary" : "ghost"}
               className="w-full justify-start gap-2 font-normal"
               onClick={() => onMainTabChange("preference")}
@@ -292,6 +305,15 @@ export default function Options() {
               <Clock className="h-4 w-4 shrink-0 opacity-70" />
               {t("options.nav.cron")}
             </Button>
+            <Button
+              type="button"
+              variant={mainTab === "status" ? "secondary" : "ghost"}
+              className="w-full justify-start gap-2 font-normal"
+              onClick={() => onMainTabChange("status")}
+            >
+              <Activity className="h-4 w-4 shrink-0 opacity-70" />
+              {t("options.nav.status")}
+            </Button>
           </nav>
         </ScrollArea>
         <div className="border-t border-border px-3 py-2">
@@ -308,6 +330,8 @@ export default function Options() {
           <SettingsSkills />
         ) : mainTab === "cron" ? (
           <SettingsCron />
+        ) : mainTab === "status" ? (
+          <SettingsStatus />
         ) : (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {mainTab === "scripts" ? (

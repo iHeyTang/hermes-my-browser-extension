@@ -27,10 +27,9 @@ export interface HermesModelCapabilities {
 
 export interface HermesAgentMainModelResponse {
   ok: boolean;
-  config_path?: string;
-  config_exists?: boolean;
   provider?: string;
   model?: string;
+  /** Mine-only additive: resolved from ``model.base_url`` in ``config.yaml``. */
   base_url?: string | null;
   /**
    * Auto-detected context length via ``agent.model_metadata`` —
@@ -43,6 +42,7 @@ export interface HermesAgentMainModelResponse {
   /** ``config_context_length`` when > 0, else ``auto_context_length``. */
   effective_context_length?: number;
   capabilities?: HermesModelCapabilities;
+  /** Present only when the request itself failed (``ok === false``). */
   error?: string;
 }
 
@@ -156,49 +156,19 @@ export async function getHermesMainProviderSettings(
   }
 }
 
-/** @deprecated Prefer ``getHermesMainProviderSettings`` — thin wrapper without ``credentials``. */
-export async function getHermesAgentMainModel(): Promise<HermesAgentMainModelResponse> {
-  const r = await getHermesMainProviderSettings();
-  if (!r.ok) {
-    return { ok: false, error: r.error };
-  }
-  return {
-    ok: true,
-    config_path: r.config_path,
-    config_exists: r.config_exists,
-    provider: r.provider,
-    model: r.model,
-    base_url: r.base_url,
-    error: r.error,
-  };
-}
-
 export async function setHermesAgentMainModel(patch: {
   provider?: string;
   model?: string;
   base_url?: string | null;
 }): Promise<HermesAgentMainModelResponse> {
-  try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/main-model`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    });
-    const data = (await res.json()) as HermesAgentMainModelResponse;
-    if (!res.ok || data.ok === false) {
-      return {
-        ok: false,
-        error: responseError(res, data),
-      };
-    }
-    return { ...data, ok: true };
-  } catch (e) {
-    return {
-      ok: false,
-      error: String((e as Error)?.message || e),
-    };
-  }
+  // Route through the mine-only ``/hermes/main-provider-settings`` POST
+  // because the upstream-aligned ``/hermes/model/set`` doesn't accept
+  // ``base_url``, and callers rely on passing ``base_url: null`` here
+  // to clear a stale ``model.base_url`` when swapping providers. The
+  // response shape (``HermesAgentMainModelResponse`` superset, no
+  // ``credentials`` when none requested) matches what this function
+  // contracted before the alignment refactor.
+  return saveHermesMainProviderSettings(patch);
 }
 
 /** Save main model (``config.yaml``) and optional plugin credentials in one request. */
@@ -231,16 +201,31 @@ export async function saveHermesMainProviderSettings(body: {
   }
 }
 
-/** Curated provider → models (TUI / `hermes model` lists). */
+/** Curated provider → models, mirrors upstream GET /api/model/options.
+ *
+ * **Wire-shape change**: when the backplane can import
+ * ``hermes_cli.inventory.build_models_payload`` (which it can whenever
+ * Hermes is the host process), this endpoint now returns upstream's
+ * shape: ``{providers: ProviderRow[], model: string, provider: string}``
+ * — NOT the richer ``{catalog_source, updated_at, metadata, providers
+ * (dict), provider_ids, ...}`` shape this client used to expect.
+ *
+ * The ``HermesModelCatalogResponse`` type below still types the legacy
+ * shape for backward-compat. Consumers should migrate to the upstream
+ * shape; type assertions will surface where adaptation is needed.
+ * The ``refresh`` query param is accepted but only honored by the
+ * local-catalog fallback (which runs when the backplane is loaded
+ * outside a Hermes venv — i.e., effectively never in the extension).
+ */
 export async function getHermesModelCatalog(
   refresh = false,
 ): Promise<HermesModelCatalogResponse> {
   const q = refresh ? "?refresh=1" : "";
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/model-catalog${q}`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/model/options${q}`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as HermesModelCatalogResponse;
-    if (!res.ok || data.ok === false) {
+    if (!res.ok) {
       return {
         ok: false,
         error: responseError(res, data),
@@ -281,18 +266,14 @@ export const AUXILIARY_SLOT_LABELS: Record<AuxiliarySlotName, string> = {
 };
 
 /**
- * One row in the auxiliary-task list. ``task`` matches upstream's slot
- * id; the other fields mirror upstream ``/api/model/auxiliary`` exactly
- * except for ``api_key`` (bridge-only — Hermes upstream stores aux keys
- * in env files, ours lives next to the slot config so the panel can
- * carry them through ``<plugin-root>/.env``).
+ * One row in the auxiliary-task list. Matches upstream
+ * ``GET /api/model/auxiliary``'s per-slot shape exactly.
  */
 export interface AuxiliaryTask {
   task: AuxiliarySlotName;
   provider: string;
   model: string;
   base_url: string;
-  api_key: string;
 }
 
 export interface AuxiliaryMainModelSummary {
@@ -302,9 +283,8 @@ export interface AuxiliaryMainModelSummary {
 
 export interface AuxiliaryModelsResponse {
   ok: boolean;
+  /** Present only when the request itself failed (``ok === false``). */
   error?: string;
-  config_path?: string;
-  config_exists?: boolean;
   /**
    * Each auxiliary task slot in display order. Matches upstream
    * ``GET /api/model/auxiliary``'s ``tasks`` array.
@@ -315,15 +295,15 @@ export interface AuxiliaryModelsResponse {
 }
 
 export async function getHermesAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
+  // Path mirrors upstream GET /api/model/auxiliary. Body shape stays
+  // mostly the same; mine-only additive fields (per-task ``api_key``,
+  // top-level ``config_path`` / ``config_exists``) still come through.
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/auxiliary-models`;
+    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/model/auxiliary`;
     const res = await fetch(url, { method: "GET" });
     const data = (await res.json()) as AuxiliaryModelsResponse;
-    if (!res.ok || data.ok === false) {
-      return {
-        ok: false,
-        error: responseError(res, data),
-      };
+    if (!res.ok) {
+      return { ok: false, error: responseError(res, data) };
     }
     return { ...data, ok: true };
   } catch (e) {
@@ -335,24 +315,25 @@ export async function setHermesAuxiliarySlot(patch: {
   task: AuxiliarySlotName;
   provider?: string;
   model?: string;
-  base_url?: string;
-  api_key?: string;
 }): Promise<AuxiliaryModelsResponse> {
+  // Backplane consolidates main + auxiliary writes into a single
+  // POST /hermes/model/set with ``scope: "auxiliary"``. The write
+  // returns a minimal envelope; we follow up with GET
+  // /hermes/model/auxiliary to refresh the full state the caller expects.
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/auxiliary-models`;
-    const res = await fetch(url, {
+    const setUrl = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/model/set`;
+    const setRes = await fetch(setUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
+      body: JSON.stringify({ scope: "auxiliary", ...patch }),
     });
-    const data = (await res.json()) as AuxiliaryModelsResponse;
-    if (!res.ok || data.ok === false) {
-      return {
-        ok: false,
-        error: responseError(res, data),
-      };
+    if (!setRes.ok) {
+      const data = (await setRes.json().catch(() => null)) as
+        | { error?: string }
+        | null;
+      return { ok: false, error: responseError(setRes, data) };
     }
-    return { ...data, ok: true };
+    return await getHermesAuxiliaryModels();
   } catch (e) {
     return { ok: false, error: String((e as Error)?.message || e) };
   }

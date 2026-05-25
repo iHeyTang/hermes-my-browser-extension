@@ -36,13 +36,11 @@ import {
   deleteHermesCronJob,
   getHermesCronJobs,
   pauseHermesCronJob,
-  previewHermesCronSchedule,
   resumeHermesCronJob,
   triggerHermesCronJob,
   updateHermesCronJob,
   type HermesCronCreateInput,
   type HermesCronJob,
-  type HermesCronParsePreviewResponse,
   type HermesCronState,
   type HermesCronUpdateInput,
 } from "~lib/hermes-cron";
@@ -114,49 +112,6 @@ function formatRelative(iso: string | null | undefined): string {
   if (abs < 86400 * 30) return word(Math.floor(abs / 86400), "day");
   if (abs < 86400 * 365) return word(Math.floor(abs / (86400 * 30)), "month");
   return word(Math.floor(abs / (86400 * 365)), "year");
-}
-
-/**
- * Live-validates a schedule string by calling the bridge's preview endpoint.
- * Debounced; the parse is cheap on the backend but we still don't need to
- * re-run it on every keystroke. Tracks both the latest parsed result and an
- * error string for invalid inputs.
- */
-function useSchedulePreview(value: string, enabled: boolean) {
-  const [preview, setPreview] =
-    useState<HermesCronParsePreviewResponse | null>(null);
-  const [pending, setPending] = useState(false);
-  const debounceRef = useRef<number | null>(null);
-  const reqIdRef = useRef(0);
-
-  useEffect(() => {
-    if (debounceRef.current) {
-      window.clearTimeout(debounceRef.current);
-      debounceRef.current = null;
-    }
-    if (!enabled || !value.trim()) {
-      setPreview(null);
-      setPending(false);
-      return;
-    }
-    setPending(true);
-    debounceRef.current = window.setTimeout(() => {
-      const id = ++reqIdRef.current;
-      void previewHermesCronSchedule(value.trim()).then((r) => {
-        if (id !== reqIdRef.current) return;
-        setPreview(r);
-        setPending(false);
-      });
-    }, 300);
-    return () => {
-      if (debounceRef.current) {
-        window.clearTimeout(debounceRef.current);
-        debounceRef.current = null;
-      }
-    };
-  }, [value, enabled]);
-
-  return { preview, pending };
 }
 
 interface JobFormState {
@@ -320,11 +275,6 @@ function JobDialog({
     }
   }, [open, initial]);
 
-  const { preview, pending: previewPending } = useSchedulePreview(
-    form.schedule,
-    open,
-  );
-
   function patch<K extends keyof JobFormState>(key: K, value: JobFormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
@@ -373,11 +323,6 @@ function JobDialog({
                 Accepts: 5-field cron expression · "every 30m / 2h / 1d" ·
                 duration "30m / 2h / 1d" (one-shot) · ISO timestamp
               </p>
-              <SchedulePreview
-                schedule={form.schedule}
-                preview={preview}
-                pending={previewPending}
-              />
             </div>
 
             <div className="space-y-1.5">
@@ -527,43 +472,6 @@ function JobDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function SchedulePreview({
-  schedule,
-  preview,
-  pending,
-}: {
-  schedule: string;
-  preview: HermesCronParsePreviewResponse | null;
-  pending: boolean;
-}) {
-  if (!schedule.trim()) return null;
-  if (pending) {
-    return (
-      <p className="flex items-center gap-1 text-[10px] text-muted-foreground">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        Parsing…
-      </p>
-    );
-  }
-  if (!preview) return null;
-  if (!preview.ok) {
-    return (
-      <p className="text-[10px] text-destructive">{preview.error}</p>
-    );
-  }
-  const kind = preview.schedule?.kind ?? "?";
-  return (
-    <p className="text-[10px] text-emerald-700 dark:text-emerald-300">
-      ✓ {kind} · parsed as “{preview.display ?? schedule}”
-      {preview.next_run_at && (
-        <span className="ml-1 text-muted-foreground">
-          · next: {formatAbsolute(preview.next_run_at)}
-        </span>
-      )}
-    </p>
   );
 }
 

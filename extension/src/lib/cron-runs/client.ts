@@ -1,8 +1,11 @@
 /**
- * HTTP client for the bridge's cron run index.
+ * HTTP client for the bridge's cron run list.
  *
- *   GET /hermes/cron/output/index       — list of recent runs (with body)
- *   GET /hermes/cron/output/:job/:run   — single run by id
+ *   GET /hermes/cron/runs — list of recent runs (with body)
+ *
+ * No detail-by-id endpoint: ``listCronRuns`` already returns each
+ * run's body, so a separate detail fetch was dead weight and got
+ * pruned alongside the backplane endpoint.
  */
 
 import { BACKPLANE_HTTP_BASE } from "../../background/config";
@@ -24,12 +27,6 @@ interface IndexResponse {
   runs?: RawRun[];
   truncated?: boolean;
   total?: number;
-  error?: string;
-}
-
-interface DetailResponse {
-  ok: boolean;
-  run?: RawRun;
   error?: string;
 }
 
@@ -66,7 +63,7 @@ export async function listCronRuns(
   }
   if (opts.includeSilent === false) params.set("include_silent", "0");
 
-  const url = `${BACKPLANE_HTTP_BASE}/hermes/cron/output/index?${params.toString()}`;
+  const url = `${BACKPLANE_HTTP_BASE}/hermes/cron/runs?${params.toString()}`;
   const res = await fetch(url, { signal: opts.signal });
   let body: IndexResponse | null = null;
   try {
@@ -83,26 +80,4 @@ export async function listCronRuns(
     truncated: !!body.truncated,
     total: body.total ?? body.runs?.length ?? 0,
   };
-}
-
-export async function getCronRun(
-  jobId: string,
-  runId: string,
-  opts: { signal?: AbortSignal } = {},
-): Promise<CronRun> {
-  const url = `${BACKPLANE_HTTP_BASE}/hermes/cron/output/${encodeURIComponent(
-    jobId,
-  )}/${encodeURIComponent(runId)}`;
-  const res = await fetch(url, { signal: opts.signal });
-  let body: DetailResponse | null = null;
-  try {
-    body = (await res.json()) as DetailResponse;
-  } catch {
-    body = null;
-  }
-  if (!res.ok || !body || !body.ok || !body.run) {
-    const msg = body?.error || `${res.status} ${res.statusText}`;
-    throw new Error(`getCronRun failed: ${msg}`);
-  }
-  return fromRaw(body.run);
 }

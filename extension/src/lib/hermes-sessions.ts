@@ -101,7 +101,6 @@ export interface UpdateSessionResponse {
 
 export interface DeleteSessionResponse {
   ok: true;
-  session_id: string;
 }
 
 export interface HermesError {
@@ -125,10 +124,33 @@ function urlFor(suffix: string): string {
   return `${stripSlash(BACKPLANE_HTTP_BASE)}${suffix}`;
 }
 
+/**
+ * Helper-internal envelope: success wraps the wire body in ``value``.
+ *
+ * Why this shape: backplane endpoints now return upstream-aligned shapes
+ * (e.g. ``GET /hermes/sessions/{id}`` returns the session dict directly,
+ * not ``{ok, session}``), so we can no longer assume the wire body
+ * carries an ``ok`` discriminator. Wrapping at the helper layer keeps
+ * callers' control flow (``if (r.ok)``) working regardless of whether
+ * the underlying endpoint returns an object, an array, or a scalar.
+ */
+type Ok<T> = { ok: true; value: T };
+
+/**
+ * Explicit type guard for the failure branch of ``request<T>``.
+ * TypeScript's structural narrowing on ``!r.ok`` doesn't always
+ * propagate through the generic ``Ok<T>``; this user-defined predicate
+ * forces the narrow so call sites can ``if (isReqErr(r)) return r;``
+ * and then use ``r.value`` in the success branch without casts.
+ */
+function isReqErr<T>(r: Ok<T> | HermesError): r is HermesError {
+  return r.ok === false;
+}
+
 async function request<T>(
   url: string,
   init: RequestInit = {},
-): Promise<T | HermesError> {
+): Promise<Ok<T> | HermesError> {
   let res: Response;
   try {
     res = await fetch(url, init);
@@ -159,7 +181,7 @@ async function request<T>(
       kind: body.kind,
     };
   }
-  return data as T;
+  return { ok: true, value: data as T };
 }
 
 function jsonInit(method: string, body?: unknown): RequestInit {
@@ -201,25 +223,39 @@ export async function listHermesSessions(
     q.set("exclude_sources", params.excludeSources.join(","));
   }
   const qs = q.toString();
-  return request<ListSessionsResponse>(
-    urlFor(`/hermes/sessions${qs ? `?${qs}` : ""}`),
-  );
+  // Wire body matches upstream GET /api/sessions: {sessions, total, limit, offset}.
+  const r = await request<{
+    sessions: HermesSession[];
+    total: number;
+    limit: number;
+    offset: number;
+  }>(urlFor(`/hermes/sessions${qs ? `?${qs}` : ""}`));
+  if (isReqErr(r)) return r;
+  return { ok: true, ...r.value };
 }
 
 export async function getHermesSession(
   id: string,
 ): Promise<GetSessionResponse | HermesError> {
-  return request<GetSessionResponse>(
+  // Wire body matches upstream GET /api/sessions/{id}: the session dict
+  // directly (no ``{ok, session}`` envelope).
+  const r = await request<HermesSession>(
     urlFor(`/hermes/sessions/${encodeURIComponent(id)}`),
   );
+  if (isReqErr(r)) return r;
+  return { ok: true, session: r.value };
 }
 
 export async function getHermesMessages(
   id: string,
 ): Promise<GetMessagesResponse | HermesError> {
-  return request<GetMessagesResponse>(
+  // Wire body matches upstream GET /api/sessions/{id}/messages:
+  // {session_id, messages}.
+  const r = await request<{ session_id: string; messages: HermesMessage[] }>(
     urlFor(`/hermes/sessions/${encodeURIComponent(id)}/messages`),
   );
+  if (isReqErr(r)) return r;
+  return { ok: true, ...r.value };
 }
 
 // ---------------------------------------------------------------------------
@@ -240,10 +276,16 @@ export interface CreateSessionInput {
 export async function createHermesSession(
   input: CreateSessionInput = {},
 ): Promise<CreateSessionResponse | HermesError> {
-  return request<CreateSessionResponse>(
-    urlFor(`/hermes/sessions`),
-    jsonInit("POST", input),
-  );
+  // POST /hermes/sessions is mine-only (no upstream equivalent); wire
+  // still carries ``{ok, session, title_error?}`` since I haven't
+  // re-aligned write paths. Spread keeps it.
+  const r = await request<{
+    ok?: true;
+    session: HermesSession;
+    title_error?: string;
+  }>(urlFor(`/hermes/sessions`), jsonInit("POST", input));
+  if (isReqErr(r)) return r;
+  return { ok: true, session: r.value.session, title_error: r.value.title_error };
 }
 
 /**
@@ -270,10 +312,23 @@ export async function appendHermesMessage(
   sessionId: string,
   input: AppendMessageInput,
 ): Promise<AppendMessageResponse | HermesError> {
-  return request<AppendMessageResponse>(
+  // Mine-only write path; wire keeps the {ok, session_id, message_id, message} envelope.
+  const r = await request<{
+    ok?: true;
+    session_id: string;
+    message_id: number;
+    message: HermesMessage | null;
+  }>(
     urlFor(`/hermes/sessions/${encodeURIComponent(sessionId)}/messages`),
     jsonInit("POST", input),
   );
+  if (isReqErr(r)) return r;
+  return {
+    ok: true,
+    session_id: r.value.session_id,
+    message_id: r.value.message_id,
+    message: r.value.message,
+  };
 }
 
 export interface UpdateSessionInput {
@@ -285,19 +340,25 @@ export async function updateHermesSession(
   sessionId: string,
   input: UpdateSessionInput,
 ): Promise<UpdateSessionResponse | HermesError> {
-  return request<UpdateSessionResponse>(
+  // Mine-only write path; wire keeps {ok, session}.
+  const r = await request<{ ok?: true; session: HermesSession }>(
     urlFor(`/hermes/sessions/${encodeURIComponent(sessionId)}`),
     jsonInit("PATCH", input),
   );
+  if (isReqErr(r)) return r;
+  return { ok: true, session: r.value.session };
 }
 
 export async function deleteHermesSession(
   sessionId: string,
 ): Promise<DeleteSessionResponse | HermesError> {
-  return request<DeleteSessionResponse>(
+  // Wire matches upstream DELETE /api/sessions/{id}: just ``{ok: true}``.
+  const r = await request<{ ok?: true }>(
     urlFor(`/hermes/sessions/${encodeURIComponent(sessionId)}`),
     jsonInit("DELETE"),
   );
+  if (isReqErr(r)) return r;
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------

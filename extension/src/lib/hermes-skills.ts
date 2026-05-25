@@ -94,12 +94,38 @@ const EMPTY_TOTALS: HermesSkillsTotals = {
   disabled: 0,
 };
 
+/** Per-item rich metadata returned by ``GET /hermes/skills/meta``'s ``items``. */
+interface SkillMetaItem {
+  name: string;
+  path?: string;
+  origin?: HermesSkillOrigin;
+  platforms?: string[] | null;
+  version?: string | null;
+  tags?: string[];
+  created_at?: string | null;
+  updated_at?: string | null;
+  timestamp_source?: HermesSkillTimestampSource;
+}
+
 export async function getHermesSkills(): Promise<HermesSkillsResponse> {
+  // Backplane endpoints are split for upstream parity:
+  //   GET /hermes/skills      → strict upstream shape (``name``, ``description``,
+  //                              ``category``, ``enabled`` per item; raw list).
+  //   GET /hermes/skills/meta → mine-only sidecar with bundle stats
+  //                              (``skills_dirs``/``totals``/``origin_counts``)
+  //                              plus per-item rich metadata under ``items``.
+  // We fetch both in parallel and join by name so the caller-facing
+  // ``HermesSkillsResponse`` keeps its richer shape unchanged.
+  const base = stripSlash(BACKPLANE_HTTP_BASE);
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/skills`;
-    const res = await fetch(url, { method: "GET" });
-    const data = (await res.json()) as HermesSkillsResponse;
-    if (!res.ok || data.ok === false) {
+    const [listRes, metaRes] = await Promise.all([
+      fetch(`${base}/hermes/skills`, { method: "GET" }),
+      fetch(`${base}/hermes/skills/meta`, { method: "GET" }),
+    ]);
+    if (!listRes.ok) {
+      const body = (await listRes.json().catch(() => null)) as
+        | { error?: string }
+        | null;
       return {
         ok: false,
         skills: [],
@@ -108,17 +134,71 @@ export async function getHermesSkills(): Promise<HermesSkillsResponse> {
         skills_dirs: [],
         totals: { ...EMPTY_TOTALS },
         origin_counts: {},
-        error: responseError(res, data),
+        error: responseError(listRes, body),
       };
     }
+    const skillsBody = (await listRes.json()) as unknown;
+    const baseSkills: Array<Partial<HermesSkillEntry>> = Array.isArray(skillsBody)
+      ? (skillsBody as Array<Partial<HermesSkillEntry>>)
+      : [];
+    // Meta is best-effort: a non-2xx leaves the rich fields blank
+    // rather than failing the whole call.
+    let skills_dirs: string[] = [];
+    let totals: HermesSkillsTotals = { ...EMPTY_TOTALS };
+    let origin_counts: Partial<Record<HermesSkillOrigin, number>> = {};
+    const metaByName = new Map<string, SkillMetaItem>();
+    if (metaRes.ok) {
+      const meta = (await metaRes.json().catch(() => null)) as {
+        skills_dirs?: string[];
+        totals?: HermesSkillsTotals;
+        origin_counts?: Partial<Record<HermesSkillOrigin, number>>;
+        items?: SkillMetaItem[];
+      } | null;
+      if (meta) {
+        skills_dirs = meta.skills_dirs ?? [];
+        totals = meta.totals ?? { ...EMPTY_TOTALS };
+        origin_counts = meta.origin_counts ?? {};
+        for (const item of meta.items ?? []) {
+          if (item && typeof item.name === "string") {
+            metaByName.set(item.name, item);
+          }
+        }
+      }
+    }
+    // Join. Empty defaults match what the rich fields used to be when
+    // the backplane returned them inline — UI code can stay unchanged.
+    const skills: HermesSkillEntry[] = baseSkills
+      .filter((s): s is Partial<HermesSkillEntry> & { name: string } =>
+        !!s && typeof s.name === "string"
+      )
+      .map((s) => {
+        const rich: SkillMetaItem = metaByName.get(s.name) ?? { name: s.name };
+        return {
+          name: s.name,
+          description: s.description ?? "",
+          category: s.category ?? null,
+          enabled: s.enabled ?? true,
+          path: rich.path ?? "",
+          origin: rich.origin ?? "manual",
+          platforms: rich.platforms ?? null,
+          version: rich.version ?? null,
+          tags: rich.tags ?? [],
+          created_at: rich.created_at ?? null,
+          updated_at: rich.updated_at ?? null,
+          timestamp_source: rich.timestamp_source ?? "fs",
+        };
+      });
     return {
       ok: true,
-      skills: data.skills ?? [],
-      platform: data.platform ?? "",
-      sys_platform: data.sys_platform ?? "",
-      skills_dirs: data.skills_dirs ?? [],
-      totals: data.totals ?? { ...EMPTY_TOTALS },
-      origin_counts: data.origin_counts ?? {},
+      skills,
+      // ``platform`` / ``sys_platform`` were never in the backplane's
+      // response — they were typed-but-unused legacy fields. Keep them
+      // as empty strings for backward-compatible typing.
+      platform: "",
+      sys_platform: "",
+      skills_dirs,
+      totals,
+      origin_counts,
     };
   } catch (e) {
     return {
@@ -226,8 +306,9 @@ export async function postHermesSkillToggle(
 ): Promise<HermesSkillToggleResponse> {
   try {
     const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/skills/toggle`;
+    // Method mirrors upstream PUT /api/skills/toggle.
     const res = await fetch(url, {
-      method: "POST",
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, enabled }),
     });

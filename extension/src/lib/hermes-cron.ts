@@ -114,14 +114,6 @@ export interface HermesCronDeleteResponse {
   error?: string;
 }
 
-export interface HermesCronParsePreviewResponse {
-  ok: boolean;
-  schedule?: HermesCronSchedule;
-  display?: string;
-  next_run_at?: string | null;
-  error?: string;
-}
-
 /** Inputs accepted by `POST /hermes/cron/jobs`. */
 export interface HermesCronCreateInput {
   /** Required unless `no_agent` is true. */
@@ -177,29 +169,33 @@ function responseError(
   );
 }
 
-async function readJson<T extends { ok: boolean; error?: string }>(
-  res: Response,
-): Promise<T> {
+async function readJsonAny(res: Response): Promise<unknown> {
   try {
-    return (await res.json()) as T;
+    return await res.json();
   } catch {
-    return { ok: false, error: `${res.status} ${res.statusText}` } as T;
+    return null;
   }
+}
+
+/** Narrow the wire body to "errored with a JSON message" — covers both
+ * upstream's ``{detail}`` and the backplane's ``{ok:false, error}``. */
+function bodyError(body: unknown): { error?: string; ok?: boolean } {
+  if (body && typeof body === "object") {
+    return body as { error?: string; ok?: boolean };
+  }
+  return {};
 }
 
 export async function getHermesCronJobs(): Promise<HermesCronListResponse> {
   try {
     const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/jobs`;
     const res = await fetch(url, { method: "GET" });
-    const data = await readJson<HermesCronListResponse>(res);
-    if (!res.ok || data.ok === false) {
-      return {
-        ok: false,
-        jobs: [],
-        error: responseError(res, data),
-      };
+    const data = await readJsonAny(res);
+    if (!res.ok) {
+      return { ok: false, jobs: [], error: responseError(res, bodyError(data)) };
     }
-    return { ok: true, jobs: data.jobs ?? [] };
+    // Wire body matches upstream GET /api/cron/jobs: a raw array of jobs.
+    return { ok: true, jobs: Array.isArray(data) ? (data as HermesCronJob[]) : [] };
   } catch (e) {
     return { ok: false, jobs: [], error: String((e as Error)?.message || e) };
   }
@@ -211,11 +207,12 @@ export async function getHermesCronJob(
   try {
     const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}`;
     const res = await fetch(url, { method: "GET" });
-    const data = await readJson<HermesCronJobResponse>(res);
-    if (!res.ok || data.ok === false) {
-      return { ok: false, error: responseError(res, data) };
+    const data = await readJsonAny(res);
+    if (!res.ok) {
+      return { ok: false, error: responseError(res, bodyError(data)) };
     }
-    return data;
+    // Wire body matches upstream: the job dict directly.
+    return { ok: true, job: data as HermesCronJob };
   } catch (e) {
     return { ok: false, error: String((e as Error)?.message || e) };
   }
@@ -231,11 +228,11 @@ export async function createHermesCronJob(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     });
-    const data = await readJson<HermesCronJobResponse>(res);
-    if (!res.ok || data.ok === false) {
-      return { ok: false, error: responseError(res, data) };
+    const data = await readJsonAny(res);
+    if (!res.ok) {
+      return { ok: false, error: responseError(res, bodyError(data)) };
     }
-    return data;
+    return { ok: true, job: data as HermesCronJob };
   } catch (e) {
     return { ok: false, error: String((e as Error)?.message || e) };
   }
@@ -247,16 +244,17 @@ export async function updateHermesCronJob(
 ): Promise<HermesCronJobResponse> {
   try {
     const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}`;
+    // Method + body shape mirror upstream PUT /api/cron/jobs/{id}.
     const res = await fetch(url, {
-      method: "POST",
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(updates),
+      body: JSON.stringify({ updates }),
     });
-    const data = await readJson<HermesCronJobResponse>(res);
-    if (!res.ok || data.ok === false) {
-      return { ok: false, error: responseError(res, data) };
+    const data = await readJsonAny(res);
+    if (!res.ok) {
+      return { ok: false, error: responseError(res, bodyError(data)) };
     }
-    return data;
+    return { ok: true, job: data as HermesCronJob };
   } catch (e) {
     return { ok: false, error: String((e as Error)?.message || e) };
   }
@@ -269,11 +267,11 @@ async function lifecycle(
   try {
     const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}/${op}`;
     const res = await fetch(url, { method: "POST" });
-    const data = await readJson<HermesCronJobResponse>(res);
-    if (!res.ok || data.ok === false) {
-      return { ok: false, error: responseError(res, data) };
+    const data = await readJsonAny(res);
+    if (!res.ok) {
+      return { ok: false, error: responseError(res, bodyError(data)) };
     }
-    return data;
+    return { ok: true, job: data as HermesCronJob };
   } catch (e) {
     return { ok: false, error: String((e as Error)?.message || e) };
   }
@@ -289,32 +287,14 @@ export async function deleteHermesCronJob(
   try {
     const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/jobs/${encodeURIComponent(jobId)}`;
     const res = await fetch(url, { method: "DELETE" });
-    const data = await readJson<HermesCronDeleteResponse>(res);
-    if (!res.ok || data.ok === false) {
-      return { ok: false, error: responseError(res, data) };
+    const data = await readJsonAny(res);
+    if (!res.ok) {
+      return { ok: false, error: responseError(res, bodyError(data)) };
     }
-    return data;
+    // Wire body matches upstream: {ok: true}.
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: String((e as Error)?.message || e) };
   }
 }
 
-export async function previewHermesCronSchedule(
-  schedule: string,
-): Promise<HermesCronParsePreviewResponse> {
-  try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/cron/parse-schedule`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ schedule }),
-    });
-    const data = await readJson<HermesCronParsePreviewResponse>(res);
-    if (!res.ok || data.ok === false) {
-      return { ok: false, error: responseError(res, data) };
-    }
-    return data;
-  } catch (e) {
-    return { ok: false, error: String((e as Error)?.message || e) };
-  }
-}
