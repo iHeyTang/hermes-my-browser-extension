@@ -15,7 +15,7 @@ the only manual step is bumping the version + tagging.
 
 ```bash
 # 1. bump version in package.json
-$EDITOR extension/package.json     # change "version": "X.Y.Z"
+$EDITOR package.json               # change "version": "X.Y.Z"
 
 # 2. commit + tag
 git commit -am "chore: bump version to vX.Y.Z"
@@ -52,13 +52,12 @@ yanked zip just stops new installs.
 ## Manual build (when you need a local zip without tagging)
 
 ```bash
-cd extension
 pnpm install --frozen-lockfile
 pnpm build
-cd build/chrome-mv3-prod && zip -r ../../../hermes-extension-dev.zip .
+cd build/chrome-mv3-prod && zip -r ../../hermes-extension-dev.zip .
 ```
 
-Output: `extension/hermes-extension-dev.zip` (about 7 MB).
+Output: `hermes-extension-dev.zip` (about 7 MB).
 
 ## Future: swap to a self-hosted artifact registry
 
@@ -92,7 +91,7 @@ The download page UI doesn't care about the source as long as
   `chrome://extensions/` for sideload users (they'll see the old number
   even after "reload").
 - **Bundle size > 10 MB** → Chrome refuses to load. Run
-  `du -sh extension/build/chrome-mv3-prod/` before tagging. Usually
+  `du -sh build/chrome-mv3-prod/` before tagging. Usually
   means unbundled fonts or images.
 - **Service worker takes too long to register** → Manifest v3 caps SW
   startup at 30s. If hit, lazy-load heavy modules.

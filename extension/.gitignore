@@ -1,8 +1,0 @@
-node_modules
-.plasmo
-build
-dist
-.env*
-.DS_Store
-out
-*.log

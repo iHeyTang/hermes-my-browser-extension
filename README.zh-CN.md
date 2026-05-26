@@ -101,15 +101,18 @@ Home 页左栏把 Inbox 渲染成卡片流：未读的浮到顶部、错误带�
 
 ---
 
-## 用 Hermes 安装（推荐）
+## 安装
 
-**把下面整段复制**给 **Hermes Agent**：
+扩展暂未上架 Chrome 商店，使用 sideload 方式安装：
 
-```
-请根据以下链接中的文档，在本机安装并配置 Hermes Browser Extension：
+1. 打开 [下载页](https://iheytang.github.io/hermes-my-browser-extension/)
+   （由 GitHub Pages 从 `docs/index.html` 提供）
+2. 下载最新版 `.zip`（自动从 [GitHub Releases](https://github.com/iHeyTang/hermes-my-browser-extension/releases) 拉取）
+3. 解压 → `chrome://extensions/` → 打开开发者模式 → 加载已解压的扩展程序
 
-https://raw.githubusercontent.com/iHeyTang/hermes-my-browser-extension/main/docs/AGENT_INSTALL.md
-```
+配套的 Hermes 插件（WebSocket hub + 工具集）位于
+[`iHeyTang/hermes-plugin-browser-tools`](https://github.com/iHeyTang/hermes-plugin-browser-tools)
+—— 先把它装到 Hermes 里，再 sideload 本扩展，扩展会自动连上本机 bridge。
 
 ---
 
@@ -121,12 +124,8 @@ https://raw.githubusercontent.com/iHeyTang/hermes-my-browser-extension/main/docs
 
 ## 卸载
 
-```bash
-hermes plugins remove hermes-my-browser-extension
-"${HOME}/.hermes/hermes-agent/venv/bin/python" -m pip uninstall hermes-my-browser-extension
-```
-
-并在 `chrome://extensions/` 中移除扩展。
+在 `chrome://extensions/` 中移除扩展即可。Hermes 端如需一并卸载插件：
+`hermes plugins remove hermes-plugin-browser-tools`。
 
 ## 许可证
 

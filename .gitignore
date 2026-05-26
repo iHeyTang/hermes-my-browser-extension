@@ -1,15 +1,14 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-dist/
+# Plasmo / pnpm
+node_modules/
+.plasmo/
 build/
-*.egg
+out/
+dist/
+*.log
+tsconfig.tsbuildinfo
 
-# Virtual environments
-venv/
-.venv/
+# Env
+.env*
 
 # IDE
 .vscode/
@@ -21,18 +20,9 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Hermes development symlink (don't commit personal paths)
-.env
-
-# Extension build artefacts (Plasmo)
-extension/node_modules/
-extension/.plasmo/
-extension/build/
-extension/out/
-
 # Old vanilla-JS extension stashed during the v0.3.0 Plasmo rewrite — kept on
 # disk for a release or two as a reference; not committed.
 extension-old/
 
-
+# Local attachments scratch dir
 attachments/

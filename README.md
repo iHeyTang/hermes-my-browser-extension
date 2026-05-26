@@ -135,28 +135,9 @@ show their structured synthesis.
 
 ---
 
-## Install with Hermes (recommended)
+## Install
 
-**Copy the whole block below** into **Hermes Agent**:
-
-```
-Follow the document at this link to install and configure Hermes Browser Extension on my machine:
-
-https://raw.githubusercontent.com/iHeyTang/hermes-my-browser-extension/main/docs/AGENT_INSTALL.md
-```
-
----
-
-## After it is installed
-
-Short guide: [`after-install.md`](./after-install.md)
-
-Technical / packaging details: [`DEVELOPER.md`](./DEVELOPER.md)
-
-## Distribution
-
-The extension is **not on the Chrome Web Store** (yet). Users install
-via sideload:
+The extension is **not on the Chrome Web Store** (yet). Sideload it:
 
 1. Visit the [download page](https://iheytang.github.io/hermes-my-browser-extension/)
    (served by GitHub Pages from `docs/index.html`)
@@ -164,9 +145,16 @@ via sideload:
    [GitHub Releases](https://github.com/iHeyTang/hermes-my-browser-extension/releases))
 3. Unzip → `chrome://extensions/` → Developer mode → Load unpacked
 
-The download page reads its release source from a single config block,
-so a future swap to a self-hosted artifact registry is one config edit
-away — no UI rework needed.
+The matching Hermes plugin (WebSocket hub + tools) lives at
+[`iHeyTang/hermes-plugin-browser-tools`](https://github.com/iHeyTang/hermes-plugin-browser-tools)
+— install that into Hermes first, then sideload this extension and it
+will connect to the local bridge automatically.
+
+## After it is installed
+
+Short guide: [`after-install.md`](./after-install.md)
+
+Technical / packaging details: [`DEVELOPER.md`](./DEVELOPER.md)
 
 ## For maintainers
 

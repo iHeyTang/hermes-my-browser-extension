@@ -34,14 +34,12 @@ jobs:
         with:
           node-version: '20'
           cache: 'pnpm'
-          cache-dependency-path: extension/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install deps
-        working-directory: extension
         run: pnpm install --frozen-lockfile
 
       - name: Build
-        working-directory: extension
         run: pnpm build
 
       - name: Resolve version
@@ -56,12 +54,12 @@ jobs:
 
       - name: Package
         id: pkg
-        working-directory: extension/build/chrome-mv3-prod
+        working-directory: build/chrome-mv3-prod
         run: |
           ZIP_NAME="hermes-extension-${{ steps.ver.outputs.tag }}.zip"
-          zip -r "../../../${ZIP_NAME}" .
+          zip -r "../../${ZIP_NAME}" .
           echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
-          echo "zip_path=extension/${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "zip_path=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Verify size
         run: |

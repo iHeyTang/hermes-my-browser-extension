@@ -30,22 +30,19 @@ jobs:
         with:
           node-version: '20'
           cache: 'pnpm'
-          cache-dependency-path: extension/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install deps
-        working-directory: extension
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        working-directory: extension
         run: pnpm exec tsc --noEmit -p tsconfig.json
 
       - name: Build (production)
-        working-directory: extension
         run: pnpm build
 
       - name: Verify bundle size
-        working-directory: extension/build/chrome-mv3-prod
+        working-directory: build/chrome-mv3-prod
         run: |
           # Chrome rejects extensions > 10 MB. Fail PR if we cross it
           # so a release that would be rejected anyway never gets cut.

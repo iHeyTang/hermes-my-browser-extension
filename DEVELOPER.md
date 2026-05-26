@@ -1,36 +1,35 @@
 # Hermes Browser Extension — developer notes
 
-Audience: contributors and anyone debugging packaging, the bridge, or Hermes integration.
+Audience: contributors and anyone debugging packaging or the bridge to Hermes.
+
+This repo is the **Chrome extension only**. The matching Hermes Python
+plugin (WebSocket hub + tools) lives at
+[`iHeyTang/hermes-plugin-browser-tools`](https://github.com/iHeyTang/hermes-plugin-browser-tools).
 
 ## Layout
 
-- `plugin.yaml` — Hermes directory-plugin manifest (`hermes plugins install …`).
-- `pyproject.toml` — Python package metadata, **`websockets>=12`**, and the official pip entry point group **`hermes_agent.plugins`** (see [Build a Hermes Plugin — distribute via pip](https://hermes-agent.nousresearch.com/docs/guides/build-a-hermes-plugin#distribute-via-pip)).
-- `hermes_my_browser_extension` — setuptools maps the repo root to this import name; bridge subprocess prefers `python -m hermes_my_browser_extension.bridge.server`, with fallback to `python -m bridge.server` when the package is not installed.
-- `bridge/` — WebSocket hub + HTTP helpers for the extension.
-- `extension/` — Plasmo (MV3) UI and service worker.
-- `scripts/bootstrap-hermes-python.sh` — `pip install -e` into Hermes’s venv (optional `HERMES_PYTHON`, optional plugin path argument).
+- `package.json` / `pnpm-lock.yaml` — Plasmo MV3 project.
+- `src/` — extension source (background, sidepanel, options, content scripts, userscript runtime).
+- `assets/` — extension icons.
+- `patches/` — `pnpm patch` artefacts (currently `property-information@7.1.0`).
+- `docs/index.html` — download/landing page served via GitHub Pages.
+- `.github/workflows/` — CI (typecheck + production build) and Release (tag-triggered zip → GitHub Releases).
 
-## Why `hermes plugins install` is not enough
+## Build
 
-`hermes plugins install owner/repo` clones under `~/.hermes/plugins/…` for discovery. It does **not** install `pyproject.toml` dependencies into `~/.hermes/hermes-agent/venv/`. Users (or an agent following `docs/AGENT_INSTALL.md`) still run **`pip install -e`** on that checkout—or install the same project from Git/PyPI.
+```
+pnpm install
+pnpm build         # → build/chrome-mv3-prod/
+```
 
-## Pip-only install paths
+Load `build/chrome-mv3-prod/` as an unpacked extension in `chrome://extensions`.
 
-- Editable checkout: `pip install -e ~/.hermes/plugins/hermes-my-browser-extension`
-- Git: `pip install "git+https://github.com/iHeyTang/hermes-my-browser-extension.git"`
-- PyPI (after publish): `pip install hermes-my-browser-extension`
+## Bridge port
 
-With pip-only installs, build the extension from the `extension/` directory inside the installed package (resolve with `import hermes_my_browser_extension` and `Path(__file__).parent`).
-
-## Bridge / tools
-
-- Hermes tools live in `tools.py`; they talk to the extension over WebSockets via `bridge/server.py`.
-- `tools.py` imports **`tools.registry`** from **Hermes** (not this repo’s filename); registering this repo as the package `hermes_my_browser_extension` avoids shadowing Hermes’s top-level `tools` package.
-
-## Optional: bridge port
-
-`MY_BROWSER_BRIDGE_PORT` / `MY_BROWSER_ATTACH_HTTP_PORT`; if changed, rebuild the extension after editing `extension/src/background/config.ts`.
+The extension connects to the local Hermes plugin via WebSocket. Defaults:
+`MY_BROWSER_BRIDGE_PORT` / `MY_BROWSER_ATTACH_HTTP_PORT` (defined in
+`src/background/config.ts`). If you change the port on the plugin side, rebuild
+the extension after editing the matching constants here.
 
 ## Trade-offs vs full CDP
 

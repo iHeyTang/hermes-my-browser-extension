@@ -12,9 +12,8 @@ export const BRIDGE_URL = "ws://127.0.0.1:9393";
 
 /**
  * Local HTTP base for the `hermes-plugin-http-backplane` plugin (env
- * `HERMES_BACKPLANE_PORT`, default 9394). Hosts three lanes:
- *   - `/extension/*`          — extension-private (file uploads etc.)
- *   - `/hermes/*`             — proxies to Hermes core (cron, models, …)
+ * `HERMES_BACKPLANE_PORT`, default 9394). Hosts two lanes:
+ *   - `/hermes/*`              — proxies to Hermes core (cron, models, attachments, …)
  *   - `/integrations/<name>/*` — third-party plugin routes
  */
 export const BACKPLANE_HTTP_BASE = "http://127.0.0.1:9394";
