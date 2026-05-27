@@ -110,7 +110,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 const SETTINGS_KEYS = {
   model: "settings.chat.model",
   /** When true, assistant bubbles show streamed tool-call + reasoning deltas. */
-  showStreamDetails: "settings.sidepanel.showStreamDetails",
+  showStreamDetails: "settings.chat.showStreamDetails",
   /** Where navigate opens + (when not Auto) where all browser tools run. */
   navigateOpenPolicy: "settings.sidepanel.navigateOpenPolicy",
 };

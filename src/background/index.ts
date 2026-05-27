@@ -83,7 +83,29 @@ chrome.runtime.onInstalled.addListener(() => {
   // Drop a friendly hint into the SW console.
   console.log("[hermes-bridge] Installed");
   void reapplyAllRegistrations();
+  void migrateLegacyStorageKeys();
 });
+
+/**
+ * One-shot, idempotent storage migrations for renamed/removed keys.
+ * Safe to run on every install / update event.
+ */
+async function migrateLegacyStorageKeys() {
+  const OLD_STREAM_KEY = "settings.sidepanel.showStreamDetails";
+  const NEW_STREAM_KEY = "settings.chat.showStreamDetails";
+
+  const r = await chrome.storage.local.get([OLD_STREAM_KEY, NEW_STREAM_KEY]);
+  const carryOver =
+    r[NEW_STREAM_KEY] === undefined && typeof r[OLD_STREAM_KEY] === "boolean";
+  if (carryOver) {
+    await chrome.storage.local.set({ [NEW_STREAM_KEY]: r[OLD_STREAM_KEY] });
+  }
+  await chrome.storage.local.remove([
+    OLD_STREAM_KEY,
+    "settings.newtab.enabled",
+    "settings.newtab.fallbackUrl",
+  ]);
+}
 
 async function bootstrap() {
   await loadAgentState();

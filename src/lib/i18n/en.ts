@@ -48,43 +48,27 @@ export const en = {
 
   // Preference page
   "options.preference.title": "Preference",
-  "options.preference.subtitle":
-    "Extension UI and behavior (unrelated to Gateway / Models)",
+  "options.preference.subtitle": "Extension UI and behavior",
+  "options.preference.section.appearance": "Appearance",
+  "options.preference.section.newtab": "New tab",
+  "options.preference.section.chat": "Chat",
   "options.preference.theme": "Theme",
-  "options.preference.theme.auto": "Follow browser",
-  "options.preference.theme.auto.desc":
-    "Match the browser / OS light or dark preference (prefers-color-scheme).",
+  "options.preference.theme.auto": "Auto",
   "options.preference.theme.light": "Light",
-  "options.preference.theme.light.desc": "Always use the light theme.",
   "options.preference.theme.dark": "Dark",
-  "options.preference.theme.dark.desc": "Always use the dark theme.",
   "options.preference.language": "Language",
-  "options.preference.language.auto": "Follow browser",
-  "options.preference.language.auto.desc":
-    "Match the browser language. Falls back to English when unsupported.",
+  "options.preference.language.auto": "Auto",
   "options.preference.language.en": "English",
-  "options.preference.language.en.desc": "Always use English.",
   "options.preference.language.zh-CN": "简体中文",
-  "options.preference.language.zh-CN.desc": "Always use Simplified Chinese.",
-  "options.preference.stream.label": "Side panel stream details",
+  "options.preference.stream.label": "Show stream details",
   "options.preference.stream.desc":
-    "When on, the side panel shows tool calls and reasoning fragments streamed from the model (kept in sync with the in-panel toggle).",
-  "options.preference.newtab.label": "Use Hermes as new tab page",
-  "options.preference.newtab.desc":
-    "When on, opening a new tab shows the Hermes chat. The extension must still be granted the new-tab override permission by Chrome the first time it tries to take over.",
-  "options.preference.newtab.fallback": "Fallback URL when off",
-  "options.preference.newtab.fallback.placeholder":
-    "https://www.google.com (leave blank for a Hermes splash)",
-  "options.preference.newtab.fallback.desc":
-    "Only used when the toggle above is off. With a URL set, new tabs redirect there; otherwise they land on a small Hermes splash with a link back to options.",
-  "options.preference.newtab.wallpaper.label": "Daily wallpaper background",
-  "options.preference.newtab.wallpaper.desc":
-    "Show Bing's image of the day as the new-tab background. Refreshes automatically once a day. Off falls back to a plain background.",
+    "Reveal tool calls and reasoning while the model streams.",
+  "options.preference.newtab.wallpaper.label": "Daily wallpaper",
 
   // Composer quick actions — Settings UI
-  "options.preference.quickActions.label": "Composer quick actions",
+  "options.preference.quickActions.label": "Quick actions",
   "options.preference.quickActions.desc":
-    "Chips next to the chat input that wrap your text in a preset prompt and send it. Toggle the built-ins on/off below, or add your own.",
+    "Chips next to the chat input that wrap your text in a preset prompt.",
   "options.preference.quickActions.builtins": "Built-in actions",
   "options.preference.quickActions.custom": "Your actions",
   "options.preference.quickActions.add": "Add action",
@@ -455,11 +439,6 @@ export const en = {
     "Pick a routine — Hermes runs it on a schedule and the output lands here.",
   "newtab.empty.customCron": "Set up a custom cron job →",
   "newtab.install.failed": "Failed to install",
-  "newtab.disabled.headline": "Hermes new tab is off",
-  "newtab.disabled.message":
-    "Enable it in Hermes options, or set a fallback URL to redirect new tabs elsewhere.",
-  "newtab.redirecting.headline": "Redirecting…",
-  "newtab.redirecting.message": "Opening {url}",
   "newtab.relative.justNow": "just now",
   "newtab.relative.mAgo": "{n}m ago",
   "newtab.relative.hAgo": "{n}h ago",

@@ -1,10 +1,11 @@
 /**
  * New-tab Home page.
  *
- * Plasmo auto-registers this file as ``chrome_url_overrides.newtab``. The
- * Preferences toggle (``settings.newtab.enabled``) gates whether the page
- * renders; when disabled we either redirect to the user-configured
- * fallback URL or show a small splash with a link back to settings.
+ * Plasmo auto-registers this file as ``chrome_url_overrides.newtab``, so
+ * every new tab routes here. To fall through to Chrome's default NTP or
+ * another extension's override, the user disables our override at
+ * chrome://extensions — there is no in-page API that can do that, so we
+ * don't expose an in-extension toggle.
  *
  * Layout intent — a cron-run reader, not a search box:
  *
@@ -94,81 +95,11 @@ import { useResolvedTheme } from "~lib/theme";
 import { useT } from "~lib/i18n";
 import { cn } from "~lib/utils";
 
-const NEWTAB_ENABLED_KEY = "settings.newtab.enabled";
-const NEWTAB_FALLBACK_KEY = "settings.newtab.fallbackUrl";
 const HOME_PENDING_PROMPT_KEY = "home.pendingPrompt";
-
-const NEWTAB_DEFAULT_ENABLED = true;
-
-type LoadState =
-  | { kind: "loading" }
-  | { kind: "home" }
-  | { kind: "redirecting"; url: string }
-  | { kind: "disabled" };
-
-function normalizeFallback(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed;
-  return `https://${trimmed}`;
-}
 
 export default function NewTab() {
   useResolvedTheme();
-  const { t } = useT();
-  const [state, setState] = useState<LoadState>({ kind: "loading" });
-
-  useEffect(() => {
-    let cancelled = false;
-    void chrome.storage.local
-      .get([NEWTAB_ENABLED_KEY, NEWTAB_FALLBACK_KEY])
-      .then((r) => {
-        if (cancelled) return;
-        const enabled =
-          typeof r[NEWTAB_ENABLED_KEY] === "boolean"
-            ? (r[NEWTAB_ENABLED_KEY] as boolean)
-            : NEWTAB_DEFAULT_ENABLED;
-        if (enabled) {
-          setState({ kind: "home" });
-          return;
-        }
-        const fallback = normalizeFallback(r[NEWTAB_FALLBACK_KEY]);
-        if (fallback) {
-          setState({ kind: "redirecting", url: fallback });
-          try {
-            window.location.replace(fallback);
-          } catch {
-            setState({ kind: "disabled" });
-          }
-          return;
-        }
-        setState({ kind: "disabled" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (state.kind === "home") return <Home />;
-  if (state.kind === "redirecting") {
-    return (
-      <DisabledSplash
-        headline={t("newtab.redirecting.headline")}
-        message={t("newtab.redirecting.message", { url: state.url })}
-      />
-    );
-  }
-  if (state.kind === "disabled") {
-    return (
-      <DisabledSplash
-        headline={t("newtab.disabled.headline")}
-        message={t("newtab.disabled.message")}
-      />
-    );
-  }
-  return <div className="h-screen w-full bg-background" />;
+  return <Home />;
 }
 
 // ---------------------------------------------------------------------------
@@ -2177,38 +2108,6 @@ function ResumeRow({
         {formatRelative(item.ts, t)}
       </span>
     </button>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Disabled splash
-// ---------------------------------------------------------------------------
-
-function DisabledSplash({
-  headline,
-  message,
-}: {
-  headline: string;
-  message: string;
-}) {
-  const { t } = useT();
-  return (
-    <div className="flex h-screen w-full items-center justify-center bg-background text-foreground">
-      <div className="flex max-w-md flex-col items-center gap-4 px-6 text-center">
-        <HermesLogo size={48} />
-        <div className="space-y-1">
-          <h1 className="text-base font-semibold tracking-tight">{headline}</h1>
-          <p className="text-xs text-muted-foreground">{message}</p>
-        </div>
-        <button
-          type="button"
-          onClick={() => chrome.runtime.openOptionsPage()}
-          className="rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-        >
-          {t("newtab.openOptions")}
-        </button>
-      </div>
-    </div>
   );
 }
 

@@ -43,42 +43,26 @@ export const zhCN: Messages = {
 
   // Preference page
   "options.preference.title": "偏好设置",
-  "options.preference.subtitle": "扩展界面与行为（与网关 / 模型无关）",
+  "options.preference.subtitle": "扩展界面与行为",
+  "options.preference.section.appearance": "外观",
+  "options.preference.section.newtab": "新标签页",
+  "options.preference.section.chat": "对话",
   "options.preference.theme": "主题",
-  "options.preference.theme.auto": "跟随浏览器",
-  "options.preference.theme.auto.desc":
-    "匹配浏览器 / 系统的浅色或深色偏好（prefers-color-scheme）。",
+  "options.preference.theme.auto": "自动",
   "options.preference.theme.light": "浅色",
-  "options.preference.theme.light.desc": "始终使用浅色主题。",
   "options.preference.theme.dark": "深色",
-  "options.preference.theme.dark.desc": "始终使用深色主题。",
   "options.preference.language": "语言",
-  "options.preference.language.auto": "跟随浏览器",
-  "options.preference.language.auto.desc":
-    "匹配浏览器语言。不支持时回退到英文。",
+  "options.preference.language.auto": "自动",
   "options.preference.language.en": "English",
-  "options.preference.language.en.desc": "始终使用英文。",
   "options.preference.language.zh-CN": "简体中文",
-  "options.preference.language.zh-CN.desc": "始终使用简体中文。",
-  "options.preference.stream.label": "侧边栏流式细节",
-  "options.preference.stream.desc":
-    "开启后，侧边栏会展示模型流式输出的工具调用与思考片段（与面板内开关保持同步）。",
-  "options.preference.newtab.label": "将 Hermes 设为新标签页",
-  "options.preference.newtab.desc":
-    "开启后，打开新标签页会显示 Hermes 聊天。首次接管时仍需 Chrome 授予新标签页覆盖权限。",
-  "options.preference.newtab.fallback": "关闭时的回退 URL",
-  "options.preference.newtab.fallback.placeholder":
-    "https://www.google.com（留空则显示 Hermes 启动页）",
-  "options.preference.newtab.fallback.desc":
-    "仅在上方开关关闭时使用。设置 URL 后，新标签页会跳转到该地址；否则会显示一个带有跳转到设置链接的 Hermes 启动页。",
-  "options.preference.newtab.wallpaper.label": "每日壁纸背景",
-  "options.preference.newtab.wallpaper.desc":
-    "在新标签页上显示来自必应每日图片的高清壁纸，每天自动更新一次。关闭后回到纯色背景。",
+  "options.preference.stream.label": "显示流式细节",
+  "options.preference.stream.desc": "展开模型流式输出中的工具调用与思考片段。",
+  "options.preference.newtab.wallpaper.label": "每日壁纸",
 
   // 输入框快捷动作 — 设置项
-  "options.preference.quickActions.label": "输入框快捷动作",
+  "options.preference.quickActions.label": "快捷动作",
   "options.preference.quickActions.desc":
-    "在聊天输入框旁边的快捷按钮，点击后会用预设提示词包裹你输入的内容并直接发送。可在下方启用/禁用内置项，也可以添加自定义项。",
+    "聊天输入框旁的按钮，用预设提示词包裹你输入的内容。",
   "options.preference.quickActions.builtins": "内置动作",
   "options.preference.quickActions.custom": "自定义动作",
   "options.preference.quickActions.add": "新增动作",
@@ -425,11 +409,6 @@ export const zhCN: Messages = {
     "挑选一个例行任务 — Hermes 会按计划运行，输出会落到这里。",
   "newtab.empty.customCron": "设置自定义定时任务 →",
   "newtab.install.failed": "安装失败",
-  "newtab.disabled.headline": "Hermes 新标签页已关闭",
-  "newtab.disabled.message":
-    "请在 Hermes 设置中启用，或设置一个回退 URL 将新标签页重定向到其他位置。",
-  "newtab.redirecting.headline": "正在跳转…",
-  "newtab.redirecting.message": "正在打开 {url}",
   "newtab.relative.justNow": "刚刚",
   "newtab.relative.mAgo": "{n} 分钟前",
   "newtab.relative.hAgo": "{n} 小时前",
