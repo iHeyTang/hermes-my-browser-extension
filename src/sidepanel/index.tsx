@@ -684,26 +684,42 @@ export default function SidePanel({
     setPendingApprovals(state.pendingApprovals ?? []);
     setActiveRunId(state.runId ?? null);
     sessions.setActiveMessages((prev) => {
-      const next = (prev as UiMessage[]).map((m) => {
-        if (m.uiId !== state.assistantUiId) return m;
-        const suffix = kind === "interrupted" ? "\n\n[interrupted]" : "";
-        return {
-          ...m,
-          content: state.assistantText + suffix,
-          streaming: state.streaming,
-          // Carry the chip URL the engine captured at end-of-turn through to
-          // any panel that opens AFTER the stream finished. While the panel
-          // is open, handleStreamDone writes this directly from the event
-          // payload; this is just the cold-open fallback.
-          ...(state.agentFinalUrl
-            ? {
-                agentFinalUrl: state.agentFinalUrl,
-                agentFinalTitle: state.agentFinalTitle ?? undefined,
-              }
-            : {}),
-        };
-      });
-      return next;
+      const arr = prev as UiMessage[];
+      const suffix = kind === "interrupted" ? "\n\n[interrupted]" : "";
+      const merged: Partial<UiMessage> = {
+        content: state.assistantText + suffix,
+        streaming: state.streaming,
+        // Carry the chip URL the engine captured at end-of-turn through to
+        // any panel that opens AFTER the stream finished. While the panel
+        // is open, handleStreamDone writes this directly from the event
+        // payload; this is just the cold-open fallback.
+        ...(state.agentFinalUrl
+          ? {
+              agentFinalUrl: state.agentFinalUrl,
+              agentFinalTitle: state.agentFinalTitle ?? undefined,
+            }
+          : {}),
+      };
+      const idx = arr.findIndex((m) => m.uiId === state.assistantUiId);
+      if (idx >= 0) {
+        const next = arr.slice();
+        next[idx] = { ...next[idx], ...merged };
+        return next;
+      }
+      // Cold-open mid-stream: the panel never persisted the assistant
+      // placeholder (it lived only in memory and the window closed
+      // inside the 250ms debounce). Synthesize one now so subsequent
+      // chunk/verbose flushes — which match by ``assistantUiId`` —
+      // have a bubble to mutate. The matching user bubble is owned by
+      // the Hermes backplane (api_server persists user messages at
+      // request time) and was loaded into ``prev`` by ``loadMessages``.
+      const synthesized: UiMessage = {
+        uiId: state.assistantUiId!,
+        role: "assistant",
+        content: "",
+        ...merged,
+      };
+      return [...arr, synthesized];
     });
     applyVerboseToAssistant();
     if (kind === "interrupted" && state.error) {
@@ -3988,19 +4004,29 @@ function Bubble({
     ) {
       return null;
     }
-    // While the request is in flight but no token has arrived yet, the bubble
-    // would otherwise be just Streamdown's bare ● caret on an empty line —
-    // which reads as a stray glyph rather than a status. Replace that with an
-    // explicit "Thinking…" placeholder + breathing dot until content streams
-    // in — unless we're already showing a verbose (tools / reasoning) block.
-    const isEmptyStreaming =
-      !!m.streaming && bodyText.trim() === "" && !hasVerboseBlock;
+    // While the request is in flight but no answer tokens have arrived
+    // yet, the bubble would otherwise be just Streamdown's bare ● caret
+    // on an empty line. Replace that with an explicit placeholder + breathing
+    // dot. We pick the label from the underlying state (not from
+    // ``hasVerboseBlock``) so collapsing stream details doesn't hide the
+    // real signal — e.g. "tool just finished, waiting for the answer"
+    // would otherwise look frozen as a bare "Thinking…".
+    const isEmptyStreaming = !!m.streaming && bodyText.trim() === "";
     if (isEmptyStreaming) {
+      const runningTool = toolProgress.find((e) => e.status === "running");
+      const hasFinishedTool = toolProgress.some(
+        (e) => e.status === "completed",
+      );
+      const placeholder = runningTool
+        ? `Running ${runningTool.label || runningTool.tool}…`
+        : hasFinishedTool
+          ? "Generating answer…"
+          : "Thinking…";
       return (
         <div className="px-1 py-1 text-sm" aria-live="polite">
           <div className="inline-flex items-center gap-2 text-muted-foreground">
             <span className="hermes-thinking-dot" aria-hidden="true" />
-            <span>Thinking…</span>
+            <span>{placeholder}</span>
           </div>
         </div>
       );

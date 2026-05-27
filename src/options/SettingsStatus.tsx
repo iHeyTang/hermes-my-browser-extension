@@ -256,21 +256,26 @@ export function SettingsStatus() {
   const gwAbort = useRef<AbortController | null>(null);
   const updAbort = useRef<AbortController | null>(null);
 
-  const refreshStatus = useCallback(async () => {
-    setStatusLoading(true);
-    const r = await getHermesStatus();
-    if (!r.ok) {
-      setStatusErr(r.error || "unknown error");
-    } else {
-      setStatusErr(null);
-      setStatus(r);
-    }
-    setStatusLoading(false);
-  }, []);
+  const refreshStatus = useCallback(
+    async (opts?: { forceUpdateCheck?: boolean }) => {
+      setStatusLoading(true);
+      const r = await getHermesStatus({
+        forceUpdateCheck: opts?.forceUpdateCheck,
+      });
+      if (!r.ok) {
+        setStatusErr(r.error || "unknown error");
+      } else {
+        setStatusErr(null);
+        setStatus(r);
+      }
+      setStatusLoading(false);
+    },
+    [],
+  );
 
   useEffect(() => {
     refreshStatus();
-    const id = window.setInterval(refreshStatus, STATUS_POLL_MS);
+    const id = window.setInterval(() => refreshStatus(), STATUS_POLL_MS);
     return () => window.clearInterval(id);
   }, [refreshStatus]);
 
@@ -303,7 +308,12 @@ export function SettingsStatus() {
           error: null,
         });
         if (!r.running) {
-          void refreshStatus();
+          // Force a fresh update-check after `hermes-update` finishes so
+          // the badge flips from "behind" → "up_to_date" without
+          // waiting out the 6h cache.
+          void refreshStatus({
+            forceUpdateCheck: name === "hermes-update",
+          });
           break;
         }
         await new Promise<void>((res) =>
@@ -376,7 +386,7 @@ export function SettingsStatus() {
         <Button
           size="sm"
           variant="outline"
-          onClick={refreshStatus}
+          onClick={() => refreshStatus({ forceUpdateCheck: true })}
           disabled={statusLoading}
         >
           {statusLoading ? (

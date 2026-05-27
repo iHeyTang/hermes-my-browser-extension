@@ -53,9 +53,23 @@ export interface HermesStatusResponse {
   update_check?: HermesUpdateCheck;
 }
 
-export async function getHermesStatus(): Promise<HermesStatusResponse> {
+export interface GetHermesStatusOptions {
+  /**
+   * Bust the backend's 6h update-check cache so the returned
+   * ``update_check`` reflects a fresh remote probe. Only the
+   * user-triggered Refresh should set this; the auto-poll uses cache.
+   */
+  forceUpdateCheck?: boolean;
+}
+
+export async function getHermesStatus(
+  opts: GetHermesStatusOptions = {},
+): Promise<HermesStatusResponse> {
+  const path = opts.forceUpdateCheck
+    ? "/hermes/status?force_update_check=1"
+    : "/hermes/status";
   try {
-    const res = await backplaneFetch("/hermes/status", { method: "GET" });
+    const res = await backplaneFetch(path, { method: "GET" });
     const data = (await res.json().catch(() => null)) as
       | HermesStatusResponse
       | { error?: string; detail?: string }
