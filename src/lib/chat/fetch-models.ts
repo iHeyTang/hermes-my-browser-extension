@@ -1,29 +1,28 @@
 /**
- * GET {apiBase}/models — OpenAI-compatible listing used by Hermes gateway.
+ * GET /v1/models — OpenAI-compatible listing.
+ *
+ * Routed through the backplane (which reverse-proxies to the Hermes
+ * gateway at 127.0.0.1:8642/v1/models). The backplane handles
+ * upstream auth via `API_SERVER_KEY`; the only key callers need to
+ * supply is the backplane key, which `backplaneFetch` injects from
+ * storage.
  */
 
-function stripTrailingSlash(s: string): string {
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
+import { backplaneFetch } from "../backplane-client";
 
 export type FetchHermesModelsResult =
   | { ok: true; ids: string[] }
   | { ok: false; message: string };
 
 export async function fetchHermesModelIds(
-  apiBase: string,
-  apiKey?: string,
   signal?: AbortSignal,
 ): Promise<FetchHermesModelsResult> {
-  const base = stripTrailingSlash(apiBase.trim() || "");
-  if (!base) {
-    return { ok: false, message: "API base URL is empty." };
-  }
-  const url = `${base}/models`;
-  const headers: Record<string, string> = { Accept: "application/json" };
-  if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
   try {
-    const res = await fetch(url, { method: "GET", headers, signal });
+    const res = await backplaneFetch("/v1/models", {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal,
+    });
     if (!res.ok) {
       let detail = "";
       try {

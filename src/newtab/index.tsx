@@ -367,17 +367,16 @@ function Home() {
           "flex w-full flex-1 flex-col gap-6 overflow-hidden px-8",
           // Centred vertically with a slight upward bias (the empty
           // composer feels more at home around the upper third than
-          // dead-centre). When peek expands, the dynamic
-          // `padding-bottom` shrinks the available area from below —
-          // `justify-center` re-centres the content in the smaller
-          // space, which is the layout-native "natural push up". No
-          // hand-tuned translate values that would break on small
-          // viewports.
-          "justify-center -translate-y-[3vh]",
+          // dead-centre). Achieved via `padding-bottom` — shrinks the
+          // available area from below so `justify-center` re-centres
+          // the content in the smaller space. Layout-native: no
+          // `transform: translate`, which would visually overlap the
+          // TopBar and steal pointer events from its icons.
+          "justify-center",
           "transition-[padding-bottom] duration-500 ease-out",
           peekExpanded
             ? "pb-[min(70vh,calc(100vh_-_280px))]"
-            : "pb-0",
+            : "pb-[6vh]",
         )}
       >
         <section className="mx-auto w-full max-w-2xl shrink-0 space-y-2">
@@ -1230,14 +1229,22 @@ function WallpaperCredit({
       <span className="flex h-8 w-8 shrink-0 items-center justify-center">
         <ImageBadgeIcon className="h-4 w-4" />
       </span>
+      {/*
+       * Animate to content's natural width via the grid 0fr → 1fr trick.
+       * `max-width` transitions look instant here because the target
+       * (45vw) is far larger than the actual text width, so the visible
+       * portion (clamped by content) finishes in the first ~30% of the
+       * duration. Grid 1fr resolves to content size, so the transition
+       * runs over its full duration regardless of how wide the text is.
+       */}
       <div
         className={cn(
-          "flex items-center overflow-hidden max-w-0",
-          "transition-[max-width] duration-300 ease-out",
-          "group-hover/credit:max-w-[45vw]",
-          "group-focus-within/credit:max-w-[45vw]",
+          "grid grid-cols-[0fr] transition-[grid-template-columns] duration-200 ease-out",
+          "group-hover/credit:grid-cols-[1fr]",
+          "group-focus-within/credit:grid-cols-[1fr]",
         )}
       >
+        <div className="flex items-center overflow-hidden">
         {wallpaper.copyrightLink ? (
           <a
             href={wallpaper.copyrightLink}
@@ -1273,6 +1280,7 @@ function WallpaperCredit({
             className={cn("h-3 w-3", cycling && "animate-spin")}
           />
         </button>
+        </div>
       </div>
     </div>
   );

@@ -7,7 +7,7 @@
  * current agent actually has access to.
  */
 
-import { BACKPLANE_HTTP_BASE } from "../background/config";
+import { backplaneFetch } from "./backplane-client";
 
 /**
  * Where a skill came from:
@@ -74,10 +74,6 @@ export interface HermesSkillsResponse {
   error?: string;
 }
 
-function stripSlash(b: string): string {
-  return b.endsWith("/") ? b.slice(0, -1) : b;
-}
-
 function responseError(
   res: Response,
   data: { error?: string } | null | undefined,
@@ -116,11 +112,10 @@ export async function getHermesSkills(): Promise<HermesSkillsResponse> {
   //                              plus per-item rich metadata under ``items``.
   // We fetch both in parallel and join by name so the caller-facing
   // ``HermesSkillsResponse`` keeps its richer shape unchanged.
-  const base = stripSlash(BACKPLANE_HTTP_BASE);
   try {
     const [listRes, metaRes] = await Promise.all([
-      fetch(`${base}/hermes/skills`, { method: "GET" }),
-      fetch(`${base}/hermes/skills/meta`, { method: "GET" }),
+      backplaneFetch("/hermes/skills", { method: "GET" }),
+      backplaneFetch("/hermes/skills/meta", { method: "GET" }),
     ]);
     if (!listRes.ok) {
       const body = (await listRes.json().catch(() => null)) as
@@ -261,8 +256,8 @@ export async function getHermesSkillFiles(
   name: string,
 ): Promise<HermesSkillFilesResponse> {
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/skills/${encodeURIComponent(name)}/files`;
-    const res = await fetch(url, { method: "GET" });
+    const url = `/hermes/skills/${encodeURIComponent(name)}/files`;
+    const res = await backplaneFetch(url, { method: "GET" });
     const data = (await res.json()) as HermesSkillFilesResponse;
     if (!res.ok || data.ok === false) {
       return { ok: false, files: [], error: responseError(res, data) };
@@ -305,9 +300,9 @@ export async function postHermesSkillToggle(
   enabled: boolean,
 ): Promise<HermesSkillToggleResponse> {
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/skills/toggle`;
+    const url = `/hermes/skills/toggle`;
     // Method mirrors upstream PUT /api/skills/toggle.
-    const res = await fetch(url, {
+    const res = await backplaneFetch(url, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, enabled }),
@@ -328,9 +323,9 @@ export async function getHermesSkillFile(
 ): Promise<HermesSkillFileResponse> {
   try {
     const url =
-      `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/skills/${encodeURIComponent(name)}/file` +
+      `/hermes/skills/${encodeURIComponent(name)}/file` +
       `?path=${encodeURIComponent(path)}`;
-    const res = await fetch(url, { method: "GET" });
+    const res = await backplaneFetch(url, { method: "GET" });
     const data = (await res.json()) as HermesSkillFileResponse;
     if (!res.ok || data.ok === false) {
       return { ok: false, error: responseError(res, data) };

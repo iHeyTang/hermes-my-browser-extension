@@ -32,10 +32,7 @@ import { HermesLogo } from "~components/hermes-logo";
 import { ScrollArea } from "~components/ui/scroll-area";
 import { Textarea } from "~components/ui/textarea";
 
-import {
-  DEFAULT_HERMES_API_BASE,
-  DEFAULT_HERMES_MODEL,
-} from "../background/config";
+import { DEFAULT_HERMES_MODEL } from "../background/config";
 import {
   ATTACHMENT_INPUT_ACCEPT,
   attachmentToBadge,
@@ -111,8 +108,6 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 }
 
 const SETTINGS_KEYS = {
-  apiBase: "settings.chat.apiBase",
-  apiKey: "settings.chat.apiKey",
   model: "settings.chat.model",
   /** When true, assistant bubbles show streamed tool-call + reasoning deltas. */
   showStreamDetails: "settings.sidepanel.showStreamDetails",
@@ -309,8 +304,6 @@ export default function SidePanel({
   const [error, setError] = useState<ChatError | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [config, setConfig] = useState({
-    apiBase: DEFAULT_HERMES_API_BASE,
-    apiKey: "",
     model: DEFAULT_HERMES_MODEL,
   });
   // Persisted across panel reloads so toggling "include current page"
@@ -1227,12 +1220,10 @@ export default function SidePanel({
   }, []);
 
   // Load chat-config on mount and watch for changes from the Options page so
-  // the side panel always reflects the latest model / apiBase / apiKey.
+  // the side panel always reflects the latest model selection.
   useEffect(() => {
     void (async () => {
       const r = await chrome.storage.local.get([
-        SETTINGS_KEYS.apiBase,
-        SETTINGS_KEYS.apiKey,
         SETTINGS_KEYS.model,
         SETTINGS_KEYS.navigateOpenPolicy,
         SETTINGS_KEYS.showStreamDetails,
@@ -1266,14 +1257,6 @@ export default function SidePanel({
       }
       await applyOpenPolicyToRunTarget(navPol);
       setConfig({
-        apiBase:
-          typeof r[SETTINGS_KEYS.apiBase] === "string"
-            ? r[SETTINGS_KEYS.apiBase]
-            : DEFAULT_HERMES_API_BASE,
-        apiKey:
-          typeof r[SETTINGS_KEYS.apiKey] === "string"
-            ? r[SETTINGS_KEYS.apiKey]
-            : "",
         model:
           typeof r[SETTINGS_KEYS.model] === "string"
             ? r[SETTINGS_KEYS.model]
@@ -1287,14 +1270,6 @@ export default function SidePanel({
     ) => {
       if (area !== "local") return;
       setConfig((prev) => ({
-        apiBase:
-          typeof changes[SETTINGS_KEYS.apiBase]?.newValue === "string"
-            ? (changes[SETTINGS_KEYS.apiBase]!.newValue as string)
-            : prev.apiBase,
-        apiKey:
-          typeof changes[SETTINGS_KEYS.apiKey]?.newValue === "string"
-            ? (changes[SETTINGS_KEYS.apiKey]!.newValue as string)
-            : prev.apiKey,
         model:
           typeof changes[SETTINGS_KEYS.model]?.newValue === "string"
             ? (changes[SETTINGS_KEYS.model]!.newValue as string)
@@ -1532,8 +1507,6 @@ export default function SidePanel({
             payload: {
               sessionId,
               assistantUiId: assistantMsg.uiId,
-              apiBase: config.apiBase,
-              apiKey: config.apiKey,
               model: config.model,
               history,
             },
@@ -1913,8 +1886,6 @@ export default function SidePanel({
       [request.approvalId]: decision,
     }));
     const res = await postHermesApprovalDecision({
-      apiBase: config.apiBase,
-      apiKey: config.apiKey || undefined,
       runId,
       approvalId: request.approvalId,
       decision,
@@ -2247,22 +2218,8 @@ export default function SidePanel({
     await addFiles(files);
   }
 
-  // Ask the SW to (re)install the Origin-stripping DNR rule. Useful when
-  // the user has just edited the API base URL or is debugging a 403.
-  async function refreshCorsRule() {
-    try {
-      await chrome.runtime.sendMessage({ action: "chatCors.refresh" });
-    } catch (e) {
-      console.warn("[sidepanel] chatCors.refresh failed:", e);
-    }
-  }
-
-  // First-run hint: surface the API-key requirement before the user types,
-  // so they hit Settings instead of an opaque 401 on send.
   const messages = sessions.activeMessages as UiMessage[];
   const hasActive = !!sessions.activeId;
-  const showApiKeyHint =
-    !config.apiKey && hasActive && messages.length === 0 && !error;
 
   return (
     <div
@@ -2325,28 +2282,10 @@ export default function SidePanel({
               Ask Hermes anything. Messages stay on this device; history
               persists in extension storage.
             </p>
-            {showApiKeyHint && (
-              <div className="w-full max-w-sm rounded-md border border-warning/40 bg-warning/10 p-3 text-left text-xs text-foreground">
-                <div className="mb-1 font-semibold">API key not set</div>
-                <p className="text-muted-foreground">
-                  If your gateway has <code>API_SERVER_KEY</code> configured in{" "}
-                  <code>~/.hermes/.env</code>, paste the same value into
-                  Settings → API key. Otherwise the gateway will reject
-                  requests with HTTP 401.
-                </p>
-                <button
-                  onClick={() => chrome.runtime.openOptionsPage()}
-                  className="mt-2 inline-flex items-center gap-1 rounded border border-foreground/20 px-2 py-1 text-[11px] uppercase tracking-wider hover:bg-foreground/10"
-                >
-                  Open Settings
-                </button>
-              </div>
-            )}
             {error && (
               <ErrorBlock
                 error={error}
                 onOpenSettings={() => chrome.runtime.openOptionsPage()}
-                onRefreshCors={() => void refreshCorsRule()}
               />
             )}
           </div>
@@ -2370,7 +2309,6 @@ export default function SidePanel({
                 <ErrorBlock
                   error={error}
                   onOpenSettings={() => chrome.runtime.openOptionsPage()}
-                  onRefreshCors={() => void refreshCorsRule()}
                 />
               )}
             </div>
@@ -2857,10 +2795,9 @@ function EmptyState({ onNew, onOpenHistory, hasHistory }: EmptyStateProps) {
 interface ErrorBlockProps {
   error: ChatError;
   onOpenSettings: () => void;
-  onRefreshCors: () => void;
 }
 
-function ErrorBlock({ error, onOpenSettings, onRefreshCors }: ErrorBlockProps) {
+function ErrorBlock({ error, onOpenSettings }: ErrorBlockProps) {
   const { t } = useT();
   return (
     <div className="w-full max-w-sm rounded-md border border-destructive/50 bg-destructive/10 p-3 text-left text-xs text-destructive">
@@ -2876,13 +2813,6 @@ function ErrorBlock({ error, onOpenSettings, onRefreshCors }: ErrorBlockProps) {
           className="inline-flex items-center gap-1 rounded border border-foreground/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-foreground hover:bg-foreground/10"
         >
           {t("sidepanel.empty.settings")}
-        </button>
-        <button
-          onClick={onRefreshCors}
-          className="inline-flex items-center gap-1 rounded border border-foreground/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-foreground hover:bg-foreground/10"
-          title={t("sidepanel.cors.reinstall")}
-        >
-          {t("sidepanel.cors.reset")}
         </button>
       </div>
     </div>
@@ -3188,6 +3118,58 @@ function bubbleTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (content == null) return "";
   return String(content);
+}
+
+/**
+ * Pull ``<think>`` / ``<reasoning>`` / ``<scratchpad>`` blocks out of an
+ * assistant message body so they can be rendered through the existing
+ * "reasoning trace" slot (smaller, muted, hideable) instead of leaking
+ * inline into the answer.
+ *
+ * Why this lives client-side: some upstream gateways forward the
+ * model's raw stream verbatim (tags included) into ``delta.content``
+ * instead of routing them to ``reasoning_content``. Streamdown then
+ * strips the unknown HTML-ish tags at render time but keeps the
+ * content between them, so the user sees the thinking prose blended
+ * with the actual answer at the same font size — and the "hide
+ * thinking" toggle does nothing because the text never made it into
+ * the reasoning channel.
+ *
+ * Handles streaming: if an opening tag has no closing tag yet (we
+ * haven't received it), everything from the opener to end-of-text is
+ * treated as in-progress thinking. The next render pass will see the
+ * full block once the closer arrives.
+ *
+ * Returns the cleaned-up body plus any extracted thinking text
+ * (multiple blocks joined with blank lines). Both fields are
+ * trimmed; either may be empty.
+ */
+function splitThinkingFromBody(
+  text: string,
+): { body: string; thinking: string } {
+  if (!text || !text.includes("<")) {
+    return { body: text, thinking: "" };
+  }
+  // Non-greedy ``[\s\S]*?`` so back-to-back blocks don't get glued.
+  // The ``(?:</\1>|$)`` alternation closes an unterminated block at
+  // end-of-text, covering the streaming case where the closer hasn't
+  // arrived yet.
+  const re = /<(think|reasoning|scratchpad)>([\s\S]*?)(?:<\/\1>|$)/gi;
+  const parts: string[] = [];
+  let body = "";
+  let lastEnd = 0;
+  for (const match of text.matchAll(re)) {
+    if (match.index === undefined) continue;
+    body += text.slice(lastEnd, match.index);
+    const inner = (match[2] ?? "").trim();
+    if (inner) parts.push(inner);
+    lastEnd = match.index + match[0].length;
+  }
+  body += text.slice(lastEnd);
+  return {
+    body: body.replace(/\n{3,}/g, "\n\n").trim(),
+    thinking: parts.join("\n\n").trim(),
+  };
 }
 
 // Group the flat message list into "turns" (one user message + the assistant
@@ -3969,9 +3951,20 @@ function Bubble({
     );
   }
   if (m.role === "assistant") {
-    const bodyText = bubbleTextContent(m.content);
+    // Some gateways forward ``<think>...</think>`` (or ``<reasoning>``
+    // / ``<scratchpad>``) blocks inside the answer stream itself
+    // rather than routing them to ``reasoning_content``. Extract them
+    // here so the existing reasoning-trace slot picks them up — the
+    // muted styling and the verbose toggle both kick in naturally.
+    const rawBody = bubbleTextContent(m.content);
+    const { body: bodyText, thinking: extractedThinking } =
+      splitThinkingFromBody(rawBody);
     const verboseText = bubbleTextContent(m.streamVerbose);
-    const reasoningText = bubbleTextContent(m.reasoning).trim();
+    // Merge the model's native ``reasoning_content`` channel (if any)
+    // with what we just yanked out of the body. Either may be empty.
+    const reasoningText = [bubbleTextContent(m.reasoning).trim(), extractedThinking]
+      .filter((s) => s.length > 0)
+      .join("\n\n");
     const toolProgress = m.hermesToolProgress ?? [];
     const timeline = m.assistantTimeline ?? [];
     const hasTimeline = showStreamDetails && timeline.length > 0;
@@ -4036,19 +4029,21 @@ function Bubble({
     );
     return (
       <div className="min-w-0 px-1 py-1 text-sm">
-        {reasoningText.length > 0 && (
+        {reasoningText.length > 0 && showStreamDetails && (
           // Reasoning trace: inline above the body, much smaller + heavily
           // muted so it reads as a side-channel artifact rather than part
           // of the answer. Body text is text-sm (14px); reasoning sits at
           // ~10.5px so the size gap alone signals "this is metadata".
-          // Always rendered (not gated on the verbose toggle) so
-          // historical turns keep their thinking visible on reload.
+          // Gated on ``showStreamDetails`` (the "thoughts" toggle) so
+          // hiding thinking actually hides the trace; otherwise the
+          // bubble's reasoning channel + the extracted-from-body
+          // ``<think>`` content would keep showing regardless.
           <Streamdown
             mode={m.streaming ? "streaming" : "static"}
             parseIncompleteMarkdown
             caret="circle"
             isAnimating={!!m.streaming}
-            className="chat-md mb-2 break-words text-[10.5px] leading-snug text-muted-foreground/55"
+            className="chat-md chat-md--reasoning mb-1.5 break-words"
           >
             {reasoningText}
           </Streamdown>

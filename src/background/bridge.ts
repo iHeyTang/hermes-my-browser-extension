@@ -22,12 +22,24 @@
 import { closeAgentWindow } from "./agent-window";
 import {
   BRIDGE_URL,
+  BRIDGE_URL_STORAGE_KEY,
   HEARTBEAT_MS,
   HEARTBEAT_TIMEOUT_MS,
   RECONNECT_MS,
 } from "./config";
 import { HANDLERS } from "./handlers";
 import { state, syncState } from "./state";
+
+async function resolveBridgeUrl(): Promise<string> {
+  try {
+    const r = await chrome.storage.local.get(BRIDGE_URL_STORAGE_KEY);
+    const stored = r[BRIDGE_URL_STORAGE_KEY];
+    if (typeof stored === "string" && stored.trim()) return stored.trim();
+  } catch {
+    /* fall through to default */
+  }
+  return BRIDGE_URL;
+}
 
 // ---------------------------------------------------------------------------
 // Read-side liveness
@@ -80,7 +92,7 @@ function rejectAllPending(reason: string) {
 // Connect / disconnect / retry
 // ---------------------------------------------------------------------------
 
-export function connect() {
+export async function connect() {
   if (
     state.ws &&
     (state.ws.readyState === WebSocket.OPEN ||
@@ -89,9 +101,10 @@ export function connect() {
     return;
   }
 
+  const url = await resolveBridgeUrl();
   let ws: WebSocket;
   try {
-    ws = new WebSocket(BRIDGE_URL);
+    ws = new WebSocket(url);
   } catch (e) {
     console.warn("[hermes-bridge] WebSocket constructor threw:", e);
     state.ws = null;
@@ -139,7 +152,7 @@ export function connect() {
           code: ev.code,
           reason: ev.reason || undefined,
           wasClean: ev.wasClean,
-          url: BRIDGE_URL,
+          url,
         },
         "—",
         hint,

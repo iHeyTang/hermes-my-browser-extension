@@ -12,7 +12,7 @@
  * never have to mix throwing and result types in the same branch.
  */
 
-import { BACKPLANE_HTTP_BASE } from "../background/config";
+import { backplaneFetch } from "./backplane-client";
 
 /**
  * Hermes session row as returned by the backplane. Timestamps are seconds
@@ -116,14 +116,6 @@ export interface HermesError {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function stripSlash(b: string): string {
-  return b.endsWith("/") ? b.slice(0, -1) : b;
-}
-
-function urlFor(suffix: string): string {
-  return `${stripSlash(BACKPLANE_HTTP_BASE)}${suffix}`;
-}
-
 /**
  * Helper-internal envelope: success wraps the wire body in ``value``.
  *
@@ -153,7 +145,7 @@ async function request<T>(
 ): Promise<Ok<T> | HermesError> {
   let res: Response;
   try {
-    res = await fetch(url, init);
+    res = await backplaneFetch(url, init);
   } catch (e) {
     // Network-layer failure (backplane down, no Hermes running). Use 0 as
     // the sentinel status so callers can branch on "couldn't reach" vs
@@ -229,7 +221,7 @@ export async function listHermesSessions(
     total: number;
     limit: number;
     offset: number;
-  }>(urlFor(`/hermes/sessions${qs ? `?${qs}` : ""}`));
+  }>((`/hermes/sessions${qs ? `?${qs}` : ""}`));
   if (isReqErr(r)) return r;
   return { ok: true, ...r.value };
 }
@@ -240,7 +232,7 @@ export async function getHermesSession(
   // Wire body matches upstream GET /api/sessions/{id}: the session dict
   // directly (no ``{ok, session}`` envelope).
   const r = await request<HermesSession>(
-    urlFor(`/hermes/sessions/${encodeURIComponent(id)}`),
+    (`/hermes/sessions/${encodeURIComponent(id)}`),
   );
   if (isReqErr(r)) return r;
   return { ok: true, session: r.value };
@@ -252,7 +244,7 @@ export async function getHermesMessages(
   // Wire body matches upstream GET /api/sessions/{id}/messages:
   // {session_id, messages}.
   const r = await request<{ session_id: string; messages: HermesMessage[] }>(
-    urlFor(`/hermes/sessions/${encodeURIComponent(id)}/messages`),
+    (`/hermes/sessions/${encodeURIComponent(id)}/messages`),
   );
   if (isReqErr(r)) return r;
   return { ok: true, ...r.value };
@@ -283,7 +275,7 @@ export async function createHermesSession(
     ok?: true;
     session: HermesSession;
     title_error?: string;
-  }>(urlFor(`/hermes/sessions`), jsonInit("POST", input));
+  }>((`/hermes/sessions`), jsonInit("POST", input));
   if (isReqErr(r)) return r;
   return { ok: true, session: r.value.session, title_error: r.value.title_error };
 }
@@ -319,7 +311,7 @@ export async function appendHermesMessage(
     message_id: number;
     message: HermesMessage | null;
   }>(
-    urlFor(`/hermes/sessions/${encodeURIComponent(sessionId)}/messages`),
+    (`/hermes/sessions/${encodeURIComponent(sessionId)}/messages`),
     jsonInit("POST", input),
   );
   if (isReqErr(r)) return r;
@@ -342,7 +334,7 @@ export async function updateHermesSession(
 ): Promise<UpdateSessionResponse | HermesError> {
   // Mine-only write path; wire keeps {ok, session}.
   const r = await request<{ ok?: true; session: HermesSession }>(
-    urlFor(`/hermes/sessions/${encodeURIComponent(sessionId)}`),
+    (`/hermes/sessions/${encodeURIComponent(sessionId)}`),
     jsonInit("PATCH", input),
   );
   if (isReqErr(r)) return r;
@@ -354,7 +346,7 @@ export async function deleteHermesSession(
 ): Promise<DeleteSessionResponse | HermesError> {
   // Wire matches upstream DELETE /api/sessions/{id}: just ``{ok: true}``.
   const r = await request<{ ok?: true }>(
-    urlFor(`/hermes/sessions/${encodeURIComponent(sessionId)}`),
+    (`/hermes/sessions/${encodeURIComponent(sessionId)}`),
     jsonInit("DELETE"),
   );
   if (isReqErr(r)) return r;

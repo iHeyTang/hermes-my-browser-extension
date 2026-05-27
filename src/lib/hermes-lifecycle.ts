@@ -9,11 +9,7 @@
  * GET on the action status polls for liveness + tails the log.
  */
 
-import { BACKPLANE_HTTP_BASE } from "../background/config";
-
-function stripSlash(b: string): string {
-  return b.endsWith("/") ? b.slice(0, -1) : b;
-}
+import { backplaneFetch } from "./backplane-client";
 
 function responseError(
   res: Response,
@@ -59,9 +55,7 @@ export interface HermesStatusResponse {
 
 export async function getHermesStatus(): Promise<HermesStatusResponse> {
   try {
-    const res = await fetch(`${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/status`, {
-      method: "GET",
-    });
+    const res = await backplaneFetch("/hermes/status", { method: "GET" });
     const data = (await res.json().catch(() => null)) as
       | HermesStatusResponse
       | { error?: string; detail?: string }
@@ -93,9 +87,7 @@ async function postAction(
   name: LifecycleActionName,
 ): Promise<SpawnActionResponse> {
   try {
-    const res = await fetch(`${stripSlash(BACKPLANE_HTTP_BASE)}${path}`, {
-      method: "POST",
-    });
+    const res = await backplaneFetch(path, { method: "POST" });
     const data = (await res.json().catch(() => null)) as
       | SpawnActionResponse
       | { error?: string; detail?: string }
@@ -140,9 +132,8 @@ export async function getActionStatus(
   try {
     const q = new URLSearchParams({ lines: String(lines) });
     const url =
-      `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/actions/` +
-      `${encodeURIComponent(name)}/status?${q.toString()}`;
-    const res = await fetch(url, { method: "GET", signal });
+      `/hermes/actions/${encodeURIComponent(name)}/status?${q.toString()}`;
+    const res = await backplaneFetch(url, { method: "GET", signal });
     const data = (await res.json().catch(() => null)) as
       | ActionStatusResponse
       | { error?: string; detail?: string }

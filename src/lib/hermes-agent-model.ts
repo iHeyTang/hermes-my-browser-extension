@@ -1,14 +1,16 @@
 /**
  * Hermes model management client.
  *
- * Primary surface: ``GET/POST /hermes/main-provider-settings`` (main model +
- * credentials as one business resource). Other ``/hermes/*`` routes cover
- * catalog, auxiliary slots, env status, and attach uploads.
+ * Three orthogonal surfaces — no bundling, no aliases:
+ *
+ *   - ``/hermes/model/info``         main-model state
+ *   - ``/hermes/model/set``          main + auxiliary writes
+ *   - ``/hermes/model/options``      provider catalog
+ *   - ``/hermes/provider-models``    per-provider model list
+ *   - ``/hermes/provider-credentials`` plugin .env credentials only
  */
 
-import {
-  BACKPLANE_HTTP_BASE,
-} from "../background/config";
+import { backplaneFetch } from "./backplane-client";
 
 /**
  * Capability flags resolved from ``agent.models_dev.get_model_capabilities``
@@ -29,20 +31,12 @@ export interface HermesAgentMainModelResponse {
   ok: boolean;
   provider?: string;
   model?: string;
-  /** Mine-only additive: resolved from ``model.base_url`` in ``config.yaml``. */
+  /** Resolved ``model.base_url`` from ``config.yaml`` (null when unset). */
   base_url?: string | null;
-  /**
-   * Auto-detected context length via ``agent.model_metadata`` —
-   * independent of any ``model.context_length`` override in
-   * ``config.yaml``. ``0`` when unknown.
-   */
   auto_context_length?: number;
-  /** ``model.context_length`` override from ``config.yaml`` (``0`` if unset). */
   config_context_length?: number;
-  /** ``config_context_length`` when > 0, else ``auto_context_length``. */
   effective_context_length?: number;
   capabilities?: HermesModelCapabilities;
-  /** Present only when the request itself failed (``ok === false``). */
   error?: string;
 }
 
@@ -55,6 +49,8 @@ export interface HermesCatalogModelEntry {
 export interface HermesCatalogProviderBlock {
   metadata?: Record<string, unknown>;
   models: HermesCatalogModelEntry[];
+  /** Stock base URL the provider ships with — purely informational. */
+  default_base_url?: string;
 }
 
 /** Same entries as `hermes model` TUI (`hermes_cli.models.CANONICAL_PROVIDERS`). */
@@ -73,165 +69,309 @@ export interface HermesModelCatalogResponse {
   providers?: Record<string, HermesCatalogProviderBlock>;
   provider_ids?: string[];
   config_provider_ids?: string[];
-  /** Slugs whose configured provider credentials are available in the current runtime. */
   env_ready_provider_ids?: string[];
-  /** Canonical provider list exposed by Hermes. */
   canonical_providers?: HermesCanonicalProviderEntry[];
   canonical_loaded?: boolean;
-  /** Provider credential variable names by provider slug. */
   provider_env_vars?: Record<string, string[]>;
   warning?: string;
 }
 
-/** Nested credential slice from ``GET /hermes/main-provider-settings``. */
-export interface HermesMainProviderSettingsCredentials {
+/** One editable env var on a provider's credentials panel. */
+export interface HermesProviderCredentialField {
+  /** Env var name. */
+  key: string;
+  /** Current value from plugin ``.env`` (empty when unset). */
+  value: string;
+  /**
+   * Placeholder shown when the input is empty. Carries the provider's
+   * default endpoint for URL fields; empty for secret fields.
+   */
+  placeholder: string;
+  /** ``"url"`` or ``"secret"`` — UI hint for input type/styling. */
+  kind: "url" | "secret";
+}
+
+/** ``GET /hermes/provider-credentials?provider=…`` response. */
+export interface HermesProviderCredentialsResponse {
+  ok: boolean;
+  error?: string;
   provider: string;
-  keys: string[];
-  values: Record<string, string>;
+  fields: HermesProviderCredentialField[];
+  /** Non-empty when the provider has no env-editable credentials (OAuth-only, etc.). */
+  auth_hint: string;
 }
 
-/** ``GET /hermes/main-provider-settings`` — main model + credentials for one business view. */
-export interface HermesMainProviderSettingsResponse extends HermesAgentMainModelResponse {
-  credentials?: HermesMainProviderSettingsCredentials;
-}
-
-/** Per-provider model list resolved from `/api/model/options`. */
+/** Per-provider model list resolved from `/hermes/provider-models`. */
 export interface HermesProviderModelsResponse {
   ok: boolean;
   error?: string;
   provider?: string;
   models?: HermesCatalogModelEntry[];
-  /** Source tag kept for compatibility with existing callers. */
   source?: string;
   cli_loaded?: boolean;
-  /** Optional field kept for backward-compatible typing. */
   pricing_loaded?: boolean;
-}
-
-function stripSlash(b: string): string {
-  return b.endsWith("/") ? b.slice(0, -1) : b;
 }
 
 function responseError(res: Response, data: { error?: string } | null | undefined): string {
   return (data && typeof data.error === "string" && data.error) || `${res.status} ${res.statusText}`;
 }
 
-export async function getHermesMainProviderSettings(
-  credentialsForProvider?: string,
-): Promise<HermesMainProviderSettingsResponse> {
-  const p = credentialsForProvider?.trim();
-  const q =
-    p && p !== "auto"
-      ? `?provider=${encodeURIComponent(p)}`
-      : "";
+/** Read the main model's resolved state from ``config.yaml``. */
+export async function getHermesMainModelInfo(): Promise<HermesAgentMainModelResponse> {
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/main-provider-settings${q}`;
-    const res = await fetch(url, { method: "GET" });
-    const data = (await res.json()) as HermesMainProviderSettingsResponse;
-    if (!res.ok || data.ok === false) {
-      return {
-        ok: false,
-        error: responseError(res, data),
-      };
+    const res = await backplaneFetch(`/hermes/model/info`, { method: "GET" });
+    const data = (await res.json()) as HermesAgentMainModelResponse;
+    if (!res.ok) {
+      return { ok: false, error: responseError(res, data) };
     }
-    const cred = data.credentials ?? {
-      provider: "",
-      keys: [],
-      values: {},
-    };
-    return {
-      ...data,
-      ok: true,
-      credentials: {
-        provider: cred.provider,
-        keys: cred.keys ?? [],
-        values: cred.values ?? {},
-      },
-    };
+    return { ...data, ok: true };
   } catch (e) {
-    return {
-      ok: false,
-      error: String((e as Error)?.message || e),
-    };
+    return { ok: false, error: String((e as Error)?.message || e) };
   }
 }
 
+/** Set the main model. ``base_url`` is optional: pass ``null`` to clear. */
 export async function setHermesAgentMainModel(patch: {
-  provider?: string;
-  model?: string;
+  provider: string;
+  model: string;
   base_url?: string | null;
 }): Promise<HermesAgentMainModelResponse> {
-  // Route through the mine-only ``/hermes/main-provider-settings`` POST
-  // because the upstream-aligned ``/hermes/model/set`` doesn't accept
-  // ``base_url``, and callers rely on passing ``base_url: null`` here
-  // to clear a stale ``model.base_url`` when swapping providers. The
-  // response shape (``HermesAgentMainModelResponse`` superset, no
-  // ``credentials`` when none requested) matches what this function
-  // contracted before the alignment refactor.
-  return saveHermesMainProviderSettings(patch);
-}
-
-/** Save main model (``config.yaml``) and optional plugin credentials in one request. */
-export async function saveHermesMainProviderSettings(body: {
-  provider?: string;
-  model?: string;
-  base_url?: string | null;
-  credentials?: Record<string, string> | null;
-}): Promise<HermesAgentMainModelResponse> {
+  const body: Record<string, unknown> = {
+    scope: "main",
+    provider: patch.provider,
+    model: patch.model,
+  };
+  if (Object.prototype.hasOwnProperty.call(patch, "base_url")) {
+    body.base_url = patch.base_url;
+  }
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/main-provider-settings`;
-    const res = await fetch(url, {
+    const res = await backplaneFetch(`/hermes/model/set`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     const data = (await res.json()) as HermesAgentMainModelResponse;
-    if (!res.ok || data.ok === false) {
+    if (!res.ok) {
+      return { ok: false, error: responseError(res, data) };
+    }
+    return { ...data, ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e as Error)?.message || e) };
+  }
+}
+
+/** Read plugin .env credentials for one provider. */
+export async function getHermesProviderCredentials(
+  provider: string,
+): Promise<HermesProviderCredentialsResponse> {
+  const slug = provider.trim();
+  if (!slug) {
+    return {
+      ok: false,
+      error: "provider required",
+      provider: "",
+      fields: [],
+      auth_hint: "",
+    };
+  }
+  try {
+    const res = await backplaneFetch(
+      `/hermes/provider-credentials?provider=${encodeURIComponent(slug)}`,
+      { method: "GET" },
+    );
+    const data = (await res.json()) as HermesProviderCredentialsResponse;
+    if (!res.ok) {
       return {
         ok: false,
         error: responseError(res, data),
+        provider: slug,
+        fields: [],
+        auth_hint: "",
       };
     }
-    return { ...data, ok: true };
+    return {
+      ok: true,
+      provider: data.provider ?? slug,
+      fields: Array.isArray(data.fields) ? data.fields : [],
+      auth_hint: typeof data.auth_hint === "string" ? data.auth_hint : "",
+    };
   } catch (e) {
     return {
       ok: false,
       error: String((e as Error)?.message || e),
+      provider: slug,
+      fields: [],
+      auth_hint: "",
     };
   }
 }
 
-/** Curated provider → models, mirrors upstream GET /api/model/options.
+/** Write plugin .env credentials for one provider. */
+export async function saveHermesProviderCredentials(
+  provider: string,
+  values: Record<string, string>,
+): Promise<{ ok: boolean; error?: string; written?: string[] }> {
+  const slug = provider.trim();
+  if (!slug) return { ok: false, error: "provider required" };
+  try {
+    const res = await backplaneFetch(`/hermes/provider-credentials`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: slug, values }),
+    });
+    const data = (await res.json()) as { ok?: boolean; error?: string; written?: string[] };
+    if (!res.ok) {
+      return { ok: false, error: responseError(res, data) };
+    }
+    return { ok: true, written: data.written ?? [] };
+  } catch (e) {
+    return { ok: false, error: String((e as Error)?.message || e) };
+  }
+}
+
+/**
+ * Wire row as emitted by Hermes's ``inventory.build_models_payload``
+ * with ``picker_hints=True`` (what backplane requests). Source values:
  *
- * **Wire-shape change**: when the backplane can import
- * ``hermes_cli.inventory.build_models_payload`` (which it can whenever
- * Hermes is the host process), this endpoint now returns upstream's
- * shape: ``{providers: ProviderRow[], model: string, provider: string}``
- * — NOT the richer ``{catalog_source, updated_at, metadata, providers
- * (dict), provider_ids, ...}`` shape this client used to expect.
+ * - ``"user-config"``: explicit ``providers.<name>`` entry in
+ *   ``~/.hermes/config.yaml``
+ * - ``"built-in"`` / ``"hermes"``: Hermes detected the provider from
+ *   a built-in catalog (curated model list) — does NOT necessarily
+ *   mean the user authenticated it; could just be visible because
+ *   Hermes ships with the slug registered
+ * - ``"canonical"``: skeleton placeholder for an unconfigured
+ *   provider (only present when ``include_unconfigured=True``)
  *
- * The ``HermesModelCatalogResponse`` type below still types the legacy
- * shape for backward-compat. Consumers should migrate to the upstream
- * shape; type assertions will surface where adaptation is needed.
- * The ``refresh`` query param is accepted but only honored by the
- * local-catalog fallback (which runs when the backplane is loaded
- * outside a Hermes venv — i.e., effectively never in the extension).
+ * ``authenticated``: true when the row has usable credentials;
+ * false for skeleton placeholders. ``is_user_defined``: true for
+ * custom-endpoint config entries.
  */
+interface WireProviderRow {
+  slug: string;
+  name?: string;
+  is_current?: boolean;
+  is_user_defined?: boolean;
+  /**
+   * Upstream's ``build_models_payload`` ships ``models`` as a plain
+   * ``string[]`` of model ids — NOT the ``{id, description, metadata}``
+   * objects the rest of this module is typed against. We normalize at
+   * the adapter boundary (see ``adaptModelOptions``) so consumers
+   * always see ``HermesCatalogModelEntry[]``. Older endpoints / dev
+   * fallbacks may still send object form, so accept both here.
+   */
+  models?: (HermesCatalogModelEntry | string)[];
+  total_models?: number;
+  source?: string;
+  authenticated?: boolean;
+  auth_type?: string;
+  key_env?: string;
+  default_base_url?: string;
+}
+
+interface WireModelOptionsResponse {
+  providers?: WireProviderRow[];
+  model?: string;
+  provider?: string;
+  /** Canonical (alias-resolved) slugs the user wrote in ``config.yaml: providers:``. */
+  configured_provider_slugs?: string[];
+  /** Slugs whose API key env vars have non-empty values in the plugin ``.env``. */
+  dotenv_configured_provider_slugs?: string[];
+  error?: string;
+}
+
+function adaptModelOptions(
+  wire: WireModelOptionsResponse,
+): HermesModelCatalogResponse {
+  const rows = Array.isArray(wire.providers) ? wire.providers : [];
+  const configuredFromBackplane = new Set<string>(
+    Array.isArray(wire.configured_provider_slugs)
+      ? wire.configured_provider_slugs.filter(
+          (s): s is string => typeof s === "string" && s.length > 0,
+        )
+      : [],
+  );
+  const dotenvConfiguredSlugs = new Set<string>(
+    Array.isArray(wire.dotenv_configured_provider_slugs)
+      ? wire.dotenv_configured_provider_slugs.filter(
+          (s): s is string => typeof s === "string" && s.length > 0,
+        )
+      : [],
+  );
+  const providersDict: Record<string, HermesCatalogProviderBlock> = {};
+  const providerIds: string[] = [];
+  const configProviderIds: string[] = [];
+  const envReadyProviderIds: string[] = [];
+  const canonical: HermesCanonicalProviderEntry[] = [];
+  for (const r of rows) {
+    const slug = (r.slug || "").trim();
+    if (!slug) continue;
+    providerIds.push(slug);
+    // Normalize ``models`` to ``HermesCatalogModelEntry[]`` regardless
+    // of wire shape (upstream sends string[], legacy / fallback may
+    // send object[]). Downstream code reads ``m.id`` everywhere.
+    const normalizedModels: HermesCatalogModelEntry[] = [];
+    for (const m of r.models ?? []) {
+      if (typeof m === "string") {
+        const id = m.trim();
+        if (id) normalizedModels.push({ id });
+      } else if (m && typeof m === "object" && typeof m.id === "string") {
+        const id = m.id.trim();
+        if (id) normalizedModels.push(m);
+      }
+    }
+    providersDict[slug] = {
+      models: normalizedModels,
+      default_base_url: r.default_base_url ?? "",
+    } as HermesCatalogProviderBlock;
+    const isUserConfigured =
+      configuredFromBackplane.has(slug) ||
+      r.source === "user-config" ||
+      r.is_user_defined === true;
+    if (isUserConfigured) {
+      configProviderIds.push(slug);
+    } else if (dotenvConfiguredSlugs.has(slug)) {
+      // Strict signal: the user pressed "Save credentials" in this
+      // extension and the plugin ``.env`` now carries this provider's
+      // API key. ``r.authenticated`` is deliberately NOT enough — it
+      // also fires when Hermes detects ambient credentials elsewhere
+      // (shell env vars, Claude Code OAuth at ``~/.claude``, ``gh``
+      // CLI tokens, AWS SDK config, …). Those flag a provider as
+      // "usable" but not "configured here", and lumping them under
+      // "Configured" surprises users who never touched the panel.
+      envReadyProviderIds.push(slug);
+    }
+    canonical.push({
+      slug,
+      label: r.name || slug,
+      tui_desc: r.name || slug,
+    });
+  }
+  return {
+    ok: true,
+    providers: providersDict,
+    provider_ids: providerIds,
+    config_provider_ids: configProviderIds,
+    env_ready_provider_ids: envReadyProviderIds,
+    canonical_providers: canonical,
+    canonical_loaded: true,
+  };
+}
+
 export async function getHermesModelCatalog(
   refresh = false,
 ): Promise<HermesModelCatalogResponse> {
   const q = refresh ? "?refresh=1" : "";
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/model/options${q}`;
-    const res = await fetch(url, { method: "GET" });
-    const data = (await res.json()) as HermesModelCatalogResponse;
+    const url = `/hermes/model/options${q}`;
+    const res = await backplaneFetch(url, { method: "GET" });
+    const data = (await res.json()) as WireModelOptionsResponse;
     if (!res.ok) {
       return {
         ok: false,
         error: responseError(res, data),
       };
     }
-    return { ...data, ok: true };
+    return adaptModelOptions(data);
   } catch (e) {
     return {
       ok: false,
@@ -240,7 +380,7 @@ export async function getHermesModelCatalog(
   }
 }
 
-/** Model ids for one provider from `/api/model/options`. */
+/** Auxiliary task slot names — matches upstream `AUXILIARY_SLOTS`. */
 export const AUXILIARY_SLOT_NAMES = [
   "vision",
   "web_extract",
@@ -265,10 +405,7 @@ export const AUXILIARY_SLOT_LABELS: Record<AuxiliarySlotName, string> = {
   title_generation: "Title Generation",
 };
 
-/**
- * One row in the auxiliary-task list. Matches upstream
- * ``GET /api/model/auxiliary``'s per-slot shape exactly.
- */
+/** One row in the auxiliary-task list. */
 export interface AuxiliaryTask {
   task: AuxiliarySlotName;
   provider: string;
@@ -283,24 +420,15 @@ export interface AuxiliaryMainModelSummary {
 
 export interface AuxiliaryModelsResponse {
   ok: boolean;
-  /** Present only when the request itself failed (``ok === false``). */
   error?: string;
-  /**
-   * Each auxiliary task slot in display order. Matches upstream
-   * ``GET /api/model/auxiliary``'s ``tasks`` array.
-   */
   tasks?: AuxiliaryTask[];
-  /** Main model summary, so callers can render aux + main side-by-side. */
   main?: AuxiliaryMainModelSummary;
 }
 
 export async function getHermesAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
-  // Path mirrors upstream GET /api/model/auxiliary. Body shape stays
-  // mostly the same; mine-only additive fields (per-task ``api_key``,
-  // top-level ``config_path`` / ``config_exists``) still come through.
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/model/auxiliary`;
-    const res = await fetch(url, { method: "GET" });
+    const url = `/hermes/model/auxiliary`;
+    const res = await backplaneFetch(url, { method: "GET" });
     const data = (await res.json()) as AuxiliaryModelsResponse;
     if (!res.ok) {
       return { ok: false, error: responseError(res, data) };
@@ -316,13 +444,9 @@ export async function setHermesAuxiliarySlot(patch: {
   provider?: string;
   model?: string;
 }): Promise<AuxiliaryModelsResponse> {
-  // Backplane consolidates main + auxiliary writes into a single
-  // POST /hermes/model/set with ``scope: "auxiliary"``. The write
-  // returns a minimal envelope; we follow up with GET
-  // /hermes/model/auxiliary to refresh the full state the caller expects.
   try {
-    const setUrl = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/model/set`;
-    const setRes = await fetch(setUrl, {
+    const setUrl = `/hermes/model/set`;
+    const setRes = await backplaneFetch(setUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ scope: "auxiliary", ...patch }),
@@ -347,8 +471,8 @@ export async function getHermesProviderModels(
   try {
     const p = encodeURIComponent(providerId);
     const q = refresh ? "&refresh=1" : "";
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/provider-models?provider=${p}${q}`;
-    const res = await fetch(url, { method: "GET" });
+    const url = `/hermes/provider-models?provider=${p}${q}`;
+    const res = await backplaneFetch(url, { method: "GET" });
     const data = (await res.json()) as HermesProviderModelsResponse;
     if (!res.ok || data.ok === false) {
       return {

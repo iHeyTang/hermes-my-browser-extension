@@ -23,11 +23,6 @@ import {
   isBridgeConnected,
   sendRequest as sendBridgeRequest,
 } from "./bridge";
-import {
-  isChatCorsRuleActive,
-  refreshChatCorsRule,
-  registerChatCorsListeners,
-} from "./chat-cors";
 import { registerChatPort } from "./chat/port";
 import { hydrateFromStorage as hydrateChatRuntime } from "./chat/state";
 import { HANDLERS } from "./handlers";
@@ -70,7 +65,6 @@ import {
 
 registerAgentWindowListeners();
 registerRuntimeBridge();
-registerChatCorsListeners();
 registerChatPort();
 
 // Toolbar-icon click opens the side panel directly. We deliberately removed
@@ -80,11 +74,6 @@ registerChatPort();
 chrome.sidePanel
   ?.setPanelBehavior({ openPanelOnActionClick: true })
   .catch(() => {});
-
-// Install the Origin-stripping DNR rule for the configured Hermes host.
-// Session rules clear on browser restart but persist across SW restarts, so
-// we re-call this on every SW spin-up to be safe.
-void refreshChatCorsRule();
 
 // ---------------------------------------------------------------------------
 // SW lifecycle
@@ -412,21 +401,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return;
     }
 
-    if (action === "chatCors.status") {
+    if (action === "bridge.refresh") {
+      // Triggered by Settings save after the user edits the bridge URL.
+      // If currently connected, recycle the socket so `connect()` re-reads
+      // the new URL from storage on its next call.
       try {
-        const active = await isChatCorsRuleActive();
-        sendResponse({ ok: true, active });
-      } catch (e) {
-        sendResponse({ ok: false, error: String((e as Error)?.message || e) });
-      }
-      return;
-    }
-
-    if (action === "chatCors.refresh") {
-      try {
-        await refreshChatCorsRule();
-        const active = await isChatCorsRuleActive();
-        sendResponse({ ok: true, active });
+        if (state.desiredConnected) {
+          await disconnect();
+          await setDesiredConnected(true);
+          void connect();
+        }
+        sendResponse({ ok: true });
       } catch (e) {
         sendResponse({ ok: false, error: String((e as Error)?.message || e) });
       }

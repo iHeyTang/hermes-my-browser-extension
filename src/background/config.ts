@@ -6,17 +6,28 @@
 /**
  * WebSocket hub for `my_browser_*` tool calls. Hosted by the
  * `hermes-plugin-browser-tools` plugin (env `HERMES_BROWSER_TOOLS_PORT`,
- * default 9393).
+ * default 9393). Users can override the URL in Options → Gateway → Bridge;
+ * the override lives in chrome.storage.local under `BRIDGE_URL_STORAGE_KEY`.
  */
 export const BRIDGE_URL = "ws://127.0.0.1:9393";
+export const BRIDGE_URL_STORAGE_KEY = "settings.bridge.url";
 
 /**
  * Local HTTP base for the `hermes-plugin-http-backplane` plugin (env
- * `HERMES_BACKPLANE_PORT`, default 9394). Hosts two lanes:
+ * `HERMES_BACKPLANE_PORT`, default 9394). Hosts three lanes:
  *   - `/hermes/*`              — proxies to Hermes core (cron, models, attachments, …)
  *   - `/integrations/<name>/*` — third-party plugin routes
+ *   - `/v1/*`                  — reverse-proxy to Hermes gateway (chat/runs/models/approval)
  */
 export const BACKPLANE_HTTP_BASE = "http://127.0.0.1:9394";
+
+/**
+ * Storage key for the user's `HERMES_BACKPLANE_KEY` mirror. When set,
+ * `backplaneFetch` (lib/backplane-client.ts) injects it as
+ * `Authorization: Bearer …` on every request to the backplane. Empty
+ * by default → backplane accepts unauthenticated requests on loopback.
+ */
+export const BACKPLANE_KEY_STORAGE_KEY = "settings.backplane.key";
 
 /**
  * @deprecated Renamed to BACKPLANE_HTTP_BASE. Kept as alias so any

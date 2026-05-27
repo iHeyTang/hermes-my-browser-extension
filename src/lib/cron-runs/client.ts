@@ -8,7 +8,7 @@
  * pruned alongside the backplane endpoint.
  */
 
-import { BACKPLANE_HTTP_BASE } from "../../background/config";
+import { backplaneFetch } from "../backplane-client";
 import type { CronRun, CronRunStatus } from "./types";
 
 interface RawRun {
@@ -63,8 +63,8 @@ export async function listCronRuns(
   }
   if (opts.includeSilent === false) params.set("include_silent", "0");
 
-  const url = `${BACKPLANE_HTTP_BASE}/hermes/cron/runs?${params.toString()}`;
-  const res = await fetch(url, { signal: opts.signal });
+  const url = `/hermes/cron/runs?${params.toString()}`;
+  const res = await backplaneFetch(url, { signal: opts.signal });
   let body: IndexResponse | null = null;
   try {
     body = (await res.json()) as IndexResponse;

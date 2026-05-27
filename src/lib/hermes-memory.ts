@@ -7,7 +7,7 @@
  * those files (it holds the fcntl lock and runs the injection scanner).
  */
 
-import { BACKPLANE_HTTP_BASE } from "../background/config";
+import { backplaneFetch } from "./backplane-client";
 
 export type HermesMemoryTarget = "memory" | "user";
 
@@ -41,10 +41,6 @@ export interface HermesMemoryListResponse {
   error?: string;
 }
 
-function stripSlash(b: string): string {
-  return b.endsWith("/") ? b.slice(0, -1) : b;
-}
-
 function responseError(
   res: Response,
   data: { error?: string } | null | undefined,
@@ -70,8 +66,8 @@ function emptyEntries(target: HermesMemoryTarget, error: string): HermesMemoryEn
 
 export async function getHermesMemoryList(): Promise<HermesMemoryListResponse> {
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/memories`;
-    const res = await fetch(url, { method: "GET" });
+    const url = `/hermes/memories`;
+    const res = await backplaneFetch(url, { method: "GET" });
     const data = (await res.json()) as HermesMemoryListResponse;
     if (!res.ok || data.ok === false) {
       return { ok: false, targets: [], error: responseError(res, data) };
@@ -86,8 +82,8 @@ export async function getHermesMemoryTarget(
   target: HermesMemoryTarget,
 ): Promise<HermesMemoryEntries> {
   try {
-    const url = `${stripSlash(BACKPLANE_HTTP_BASE)}/hermes/memories/${target}`;
-    const res = await fetch(url, { method: "GET" });
+    const url = `/hermes/memories/${target}`;
+    const res = await backplaneFetch(url, { method: "GET" });
     const data = (await res.json()) as HermesMemoryEntries;
     if (!res.ok || data.ok === false) {
       return emptyEntries(target, responseError(res, data));

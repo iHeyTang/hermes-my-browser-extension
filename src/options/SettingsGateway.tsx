@@ -8,20 +8,25 @@ import { Separator } from "~components/ui/separator";
 import { fetchHermesModelIds } from "~lib/chat/fetch-models";
 import { useT } from "~lib/i18n";
 
-import { DEFAULT_HERMES_API_BASE, DEFAULT_HERMES_MODEL } from "../background/config";
+import {
+  BACKPLANE_KEY_STORAGE_KEY,
+  BRIDGE_URL,
+  BRIDGE_URL_STORAGE_KEY,
+  DEFAULT_HERMES_MODEL,
+} from "../background/config";
 
 const KEYS = {
-  apiBase: "settings.chat.apiBase",
-  apiKey: "settings.chat.apiKey",
   model: "settings.chat.model",
+  backplaneKey: BACKPLANE_KEY_STORAGE_KEY,
+  bridgeUrl: BRIDGE_URL_STORAGE_KEY,
 };
 
-/** Side-panel chat → hermes-agent-gateway (OpenAI-compatible HTTP). */
+/** Side-panel chat → backplane → Hermes gateway (proxied). */
 export function SettingsGateway() {
   const { t } = useT();
-  const [apiBase, setApiBase] = useState(DEFAULT_HERMES_API_BASE);
-  const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState(DEFAULT_HERMES_MODEL);
+  const [backplaneKey, setBackplaneKey] = useState("");
+  const [bridgeUrl, setBridgeUrl] = useState(BRIDGE_URL);
   const [modelIds, setModelIds] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -30,24 +35,28 @@ export function SettingsGateway() {
   useEffect(() => {
     void (async () => {
       const r = await chrome.storage.local.get([
-        KEYS.apiBase,
-        KEYS.apiKey,
         KEYS.model,
+        KEYS.backplaneKey,
+        KEYS.bridgeUrl,
       ]);
-      if (typeof r[KEYS.apiBase] === "string") setApiBase(r[KEYS.apiBase]);
-      if (typeof r[KEYS.apiKey] === "string") setApiKey(r[KEYS.apiKey]);
       if (typeof r[KEYS.model] === "string") setModel(r[KEYS.model]);
+      if (typeof r[KEYS.backplaneKey] === "string") {
+        setBackplaneKey(r[KEYS.backplaneKey]);
+      }
+      if (typeof r[KEYS.bridgeUrl] === "string" && r[KEYS.bridgeUrl].trim()) {
+        setBridgeUrl(r[KEYS.bridgeUrl]);
+      }
     })();
   }, []);
 
   async function save() {
     await chrome.storage.local.set({
-      [KEYS.apiBase]: apiBase.trim() || DEFAULT_HERMES_API_BASE,
-      [KEYS.apiKey]: apiKey.trim(),
       [KEYS.model]: model.trim() || DEFAULT_HERMES_MODEL,
+      [KEYS.backplaneKey]: backplaneKey.trim(),
+      [KEYS.bridgeUrl]: bridgeUrl.trim() || BRIDGE_URL,
     });
     try {
-      await chrome.runtime.sendMessage({ action: "chatCors.refresh" });
+      await chrome.runtime.sendMessage({ action: "bridge.refresh" });
     } catch {
       /* ignore */
     }
@@ -61,7 +70,7 @@ export function SettingsGateway() {
     const ac = new AbortController();
     const timeoutId = window.setTimeout(() => ac.abort(), 20_000);
     try {
-      const r = await fetchHermesModelIds(apiBase, apiKey, ac.signal);
+      const r = await fetchHermesModelIds(ac.signal);
       if (r.ok === false) {
         setModelIds([]);
         setModelsError(r.message);
@@ -84,35 +93,10 @@ export function SettingsGateway() {
 
   return (
     <div className="space-y-10">
-      <p className="text-xs text-muted-foreground">
-        {t("options.gateway.intro.lead")}{" "}
-        <span className="font-medium text-foreground">
-          {t("options.gateway.intro.gatewayName")}
-        </span>{" "}
-        {t("options.gateway.intro.protocol")}{" "}
-        {t("options.gateway.intro.configureHint")}{" "}
-        <span className="font-medium text-foreground">
-          {t("options.gateway.intro.modelsTab")}
-        </span>{" "}
-        {t("options.gateway.intro.tab")}
-      </p>
-
       <section className="space-y-3">
         <h3 className="text-sm font-medium text-foreground">
           {t("options.gateway.section.chat")}
         </h3>
-        <div className="space-y-1.5">
-          <Label htmlFor="apiBase">{t("options.gateway.apiBase.label")}</Label>
-          <Input
-            id="apiBase"
-            value={apiBase}
-            onChange={(e) => setApiBase(e.target.value)}
-            placeholder={DEFAULT_HERMES_API_BASE}
-          />
-          <p className="text-xs text-muted-foreground">
-            {t("options.gateway.apiBase.help")}
-          </p>
-        </div>
         <div className="space-y-1.5">
           <div className="flex items-center justify-between gap-2">
             <Label htmlFor="model">{t("options.gateway.model.label")}</Label>
@@ -151,25 +135,6 @@ export function SettingsGateway() {
             <p className="text-[11px] text-destructive">{modelsError}</p>
           )}
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="apiKey">{t("options.gateway.apiKey.label")}</Label>
-          <Input
-            id="apiKey"
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={t("options.gateway.apiKey.placeholder")}
-          />
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {t("options.gateway.sessions.help.before")}{" "}
-          <span className="font-medium text-foreground">
-            {t("options.gateway.sessions.help.sessions")}
-          </span>{" "}
-          {t("options.gateway.sessions.help.after")}{" "}
-          <code className="font-mono">X-Hermes-Session-Id</code>{" "}
-          {t("options.gateway.sessions.help.headerSuffix")}
-        </p>
         <div className="flex items-center gap-2">
           <Button onClick={() => void save()}>{t("options.gateway.save")}</Button>
           {saved && (
@@ -182,19 +147,46 @@ export function SettingsGateway() {
 
       <Separator />
 
-      <section className="space-y-2 text-sm">
+      <section className="space-y-3">
+        <h3 className="text-sm font-medium text-foreground">
+          {t("options.gateway.backplaneKey.title")}
+        </h3>
+        <div className="space-y-1.5">
+          <Label htmlFor="backplaneKey">
+            {t("options.gateway.backplaneKey.label")}
+          </Label>
+          <Input
+            id="backplaneKey"
+            type="password"
+            value={backplaneKey}
+            onChange={(e) => setBackplaneKey(e.target.value)}
+            placeholder={t("options.gateway.backplaneKey.placeholder")}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            {t("options.gateway.backplaneKey.help")}
+          </p>
+        </div>
+      </section>
+
+      <Separator />
+
+      <section className="space-y-3">
         <h3 className="text-sm font-medium text-foreground">
           {t("options.gateway.bridge.title")}
         </h3>
-        <p className="text-muted-foreground">
-          {t("options.gateway.bridge.fixed.before")}{" "}
-          <code className="font-mono text-foreground">ws://127.0.0.1:9393</code>
-          {t("options.gateway.bridge.fixed.after")}{" "}
-          <code className="font-mono text-foreground">
-            MY_BROWSER_BRIDGE_PORT
-          </code>{" "}
-          {t("options.gateway.bridge.fixed.suffix")}
-        </p>
+        <div className="space-y-1.5">
+          <Label htmlFor="bridgeUrl">{t("options.gateway.bridge.url.label")}</Label>
+          <Input
+            id="bridgeUrl"
+            value={bridgeUrl}
+            onChange={(e) => setBridgeUrl(e.target.value)}
+            placeholder={BRIDGE_URL}
+            className="font-mono text-xs"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            {t("options.gateway.bridge.url.help")}
+          </p>
+        </div>
       </section>
     </div>
   );

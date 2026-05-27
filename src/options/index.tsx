@@ -5,6 +5,7 @@ import {
   Clock,
   Code2,
   FilePlus2,
+  FileText,
   Globe,
   Palette,
   RadioTower,
@@ -39,6 +40,7 @@ import { ScriptList } from "./ScriptList";
 import { OPTIONS_SHELL_HEADER_ROW } from "./optionsPageChrome";
 import { SettingsCron } from "./SettingsCron";
 import { SettingsGateway } from "./SettingsGateway";
+import { SettingsLogs } from "./SettingsLogs";
 import { SettingsMemory } from "./SettingsMemory";
 import { SettingsPreferences } from "./SettingsPreferences";
 import { SettingsSkills } from "./SettingsSkills";
@@ -73,6 +75,7 @@ const OPTIONS_MAIN_TABS = [
   "skills",
   "memory",
   "cron",
+  "logs",
 ] as const;
 type MainTab = (typeof OPTIONS_MAIN_TABS)[number];
 
@@ -307,12 +310,12 @@ export default function Options() {
             </Button>
             <Button
               type="button"
-              variant={mainTab === "status" ? "secondary" : "ghost"}
+              variant={mainTab === "logs" ? "secondary" : "ghost"}
               className="w-full justify-start gap-2 font-normal"
-              onClick={() => onMainTabChange("status")}
+              onClick={() => onMainTabChange("logs")}
             >
-              <Activity className="h-4 w-4 shrink-0 opacity-70" />
-              {t("options.nav.status")}
+              <FileText className="h-4 w-4 shrink-0 opacity-70" />
+              {t("options.nav.logs")}
             </Button>
           </nav>
         </ScrollArea>
@@ -332,6 +335,8 @@ export default function Options() {
           <SettingsCron />
         ) : mainTab === "status" ? (
           <SettingsStatus />
+        ) : mainTab === "logs" ? (
+          <SettingsLogs />
         ) : (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {mainTab === "scripts" ? (

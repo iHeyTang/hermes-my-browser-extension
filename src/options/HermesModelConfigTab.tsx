@@ -1,13 +1,14 @@
 import {
   ChevronDown,
   ChevronRight,
+  Crown,
   Loader2,
+  MoreHorizontal,
   RefreshCw,
-  Star,
   X,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "~components/ui/badge";
 import { Button } from "~components/ui/button";
@@ -21,10 +22,11 @@ import {
   AUXILIARY_SLOT_LABELS,
   AUXILIARY_SLOT_NAMES,
   getHermesAuxiliaryModels,
-  getHermesMainProviderSettings,
+  getHermesMainModelInfo,
   getHermesModelCatalog,
+  getHermesProviderCredentials,
   getHermesProviderModels,
-  saveHermesMainProviderSettings,
+  saveHermesProviderCredentials,
   setHermesAgentMainModel,
   setHermesAuxiliarySlot,
   type AuxiliaryModelsResponse,
@@ -32,6 +34,7 @@ import {
   type AuxiliaryTask,
   type HermesCatalogModelEntry,
   type HermesModelCatalogResponse,
+  type HermesProviderCredentialField,
 } from "~lib/hermes-agent-model";
 import { cn } from "~lib/utils";
 
@@ -96,11 +99,12 @@ function labelMetaKey(k: string): string {
     modality: "Modality",
     modalities: "Modality",
     parameters: "Parameters",
+    tags: "Capabilities",
   };
   return m[k] ?? k.replace(/_/g, " ");
 }
 
-/** Stable order for ``metadata`` chips (pricing near context). */
+/** Stable order for ``metadata`` chips (context first, then pricing, then tags). */
 const META_DISPLAY_KEY_ORDER: string[] = [
   "context_window",
   "max_context_tokens",
@@ -115,6 +119,7 @@ const META_DISPLAY_KEY_ORDER: string[] = [
   "modality",
   "modalities",
   "parameters",
+  "tags",
 ];
 
 function metaDisplayKeyRank(k: string): number {
@@ -147,6 +152,12 @@ function ModelEntryMetadataLine({
   );
   if (!pairs.length) return null;
   pairs.sort(([a], [b]) => metaDisplayKeyRank(a) - metaDisplayKeyRank(b) || a.localeCompare(b));
+  const TOKEN_COUNT_KEYS = new Set([
+    "context_window",
+    "max_context_tokens",
+    "max_output_tokens",
+    "max_tokens",
+  ]);
   return (
     <div className="mt-1 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] leading-snug text-muted-foreground">
       {pairs.map(([k, v]) => {
@@ -162,15 +173,37 @@ function ModelEntryMetadataLine({
             </span>
           );
         }
+        const valueText = TOKEN_COUNT_KEYS.has(k)
+          ? formatTokenCount(v)
+          : formatScalarForMeta(v);
         return (
           <span key={k} title={k}>
             <span className="font-medium text-foreground/65">{labelMetaKey(k)}</span>
-            <span className="text-muted-foreground/90"> {formatScalarForMeta(v)}</span>
+            <span className="text-muted-foreground/90"> {valueText}</span>
           </span>
         );
       })}
     </div>
   );
+}
+
+/** Format token-count integers with K/M suffix (200000 → "200K"). Falls
+ * back to the generic formatter for non-numeric or non-positive values
+ * so we never silently swallow odd input.
+ */
+function formatTokenCount(v: unknown): string {
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+    return formatScalarForMeta(v);
+  }
+  if (v >= 1_000_000) {
+    const m = v / 1_000_000;
+    return Number.isInteger(m) ? `${m}M` : `${m.toFixed(1)}M`;
+  }
+  if (v >= 1_000) {
+    const k = v / 1_000;
+    return Number.isInteger(k) ? `${k}K` : `${k.toFixed(0)}K`;
+  }
+  return String(v);
 }
 
 export function HermesModelConfigTab() {
@@ -183,19 +216,16 @@ export function HermesModelConfigTab() {
   // ── Sidebar selection ──────────────────────────────────────────────────
   const [section, setSection] = useState<SidebarSection>("model-config");
 
-  // ── Main-model state (disk / draft) ───────────────────────────────────
+  // ── Main-model state (disk only — no draft) ───────────────────────────
   const [mainLoading, setMainLoading] = useState(true);
   const [mainError, setMainError] = useState<string | null>(null);
   const [diskProvider, setDiskProvider] = useState("auto");
   const [diskModel, setDiskModel] = useState("");
   const [diskBaseUrl, setDiskBaseUrl] = useState("");
   /**
-   * Resolved context-length triple (auto / config-override / effective)
-   * + model capability flags from ``agent.models_dev``. Comes back on
-   * the same ``/hermes/main-provider-settings`` response — kept in
-   * its own state so the "Default model" card can render context +
-   * capability chips alongside the model name without prop-drilling
-   * the whole HermesAgentMainModelResponse through nested panels.
+   * Resolved context-length triple + capabilities from
+   * ``/hermes/model/info``. Owned independently of the catalog and
+   * credentials fetches — those three surfaces are orthogonal now.
    */
   const [mainContext, setMainContext] = useState<{
     auto: number;
@@ -221,10 +251,9 @@ export function HermesModelConfigTab() {
   const [auxSavingSlot, setAuxSavingSlot] = useState<AuxiliarySlotName | null>(null);
   const [auxSavedSlot, setAuxSavedSlot] = useState<AuxiliarySlotName | null>(null);
 
-  // ── Provider panel state (edit) ───────────────────────────────────────
-  const [hProvider, setHProvider] = useState("auto");
-  const [hModel, setHModel] = useState("");
-  const [hBaseUrl, setHBaseUrl] = useState("");
+  // ── Provider panel state ──────────────────────────────────────────────
+  // Sidebar selection drives this; empty means "no provider picked yet".
+  const [hProvider, setHProvider] = useState("");
   const [hSaving, setHSaving] = useState(false);
   const [hSaved, setHSaved] = useState(false);
   const [hError, setHError] = useState<string | null>(null);
@@ -235,18 +264,37 @@ export function HermesModelConfigTab() {
     cli_loaded?: boolean;
     pricing_loaded?: boolean;
   } | null>(null);
+  /**
+   * Per-provider credential cache. Keyed by slug. Once a provider's
+   * fields/hint have been fetched they live here for the rest of the
+   * session — switching sidebar selection just re-reads from cache and
+   * the panel renders instantly (no spinner). ``saveProviderCredentials``
+   * and ``refreshCatalogFromRemote`` overwrite the relevant slug's entry
+   * so writes don't leave stale data behind.
+   */
+  const [credentialsCache, setCredentialsCache] = useState<
+    Record<
+      string,
+      { fields: HermesProviderCredentialField[]; authHint: string }
+    >
+  >({});
+  /** Edit drafts for the *current* hProvider only — reset on switch. */
   const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
-  /** Env var names allowed for the current provider (from bridge / Hermes profile). */
-  const [credentialKeys, setCredentialKeys] = useState<string[]>([]);
+  /** True only when the *current* hProvider is not yet in the cache. */
   const [keysLoading, setKeysLoading] = useState(false);
   const [keysError, setKeysError] = useState<string | null>(null);
-  /** After initial combined GET, skip one redundant credentials refetch for the same provider. */
-  const skipNextCredentialsFetch = useRef(false);
 
-  // ── Model-Config panel saving state ───────────────────────────────────
+  const currentCredentials = hProvider ? credentialsCache[hProvider] : undefined;
+  const credentialFields = currentCredentials?.fields ?? [];
+  const credentialAuthHint = currentCredentials?.authHint ?? "";
+
+  // ── Model-Config panel state ──────────────────────────────────────────
   const [mcSaving, setMcSaving] = useState(false);
   const [mcError, setMcError] = useState<string | null>(null);
   const [mcSaved, setMcSaved] = useState(false);
+  // Editable fields used only when configuring a `custom` main model.
+  const [customDraftModel, setCustomDraftModel] = useState("");
+  const [customDraftBaseUrl, setCustomDraftBaseUrl] = useState("");
 
   // ── Derived ───────────────────────────────────────────────────────────
   const canonicalLabelBySlug = useMemo(() => {
@@ -256,32 +304,6 @@ export function HermesModelConfigTab() {
     }
     return m;
   }, [catalog?.canonical_providers]);
-
-  const orderedSidebarProviders = useMemo(() => {
-    const catalogIds =
-      catalog?.provider_ids && catalog.provider_ids.length > 0
-        ? [...catalog.provider_ids]
-        : [];
-    const diskP = (diskProvider || "auto").trim() || "auto";
-    const hp = hProvider.trim();
-    const seen = new Set<string>();
-    const out: string[] = [];
-    const push = (slug: string) => {
-      const s = slug.trim();
-      if (!s || seen.has(s)) return;
-      seen.add(s);
-      out.push(s);
-    };
-    if (diskP !== "auto") push(diskP);
-    for (const id of catalog?.config_provider_ids ?? []) push(id);
-    for (const id of catalogIds) {
-      if (id !== "auto" && id !== "custom") push(id);
-    }
-    if (hp && hp !== "auto" && hp !== "custom") push(hp);
-    push("auto");
-    push("custom");
-    return out;
-  }, [catalog?.config_provider_ids, catalog?.provider_ids, diskProvider, hProvider]);
 
   const configSlugSet = useMemo(
     () => new Set(catalog?.config_provider_ids ?? []),
@@ -300,20 +322,72 @@ export function HermesModelConfigTab() {
     return s;
   }, [catalog?.config_provider_ids, catalog?.env_ready_provider_ids]);
 
+  /**
+   * Sidebar split into two ordered groups:
+   *   - configured: providers the user has actually set up
+   *     (config.yaml entries ∪ env-ready keys)
+   *   - available: every other canonical slug
+   *
+   * No "auto" entry — auto is a main-model resolution policy, not a
+   * provider you configure. It lives in Model Config only.
+   *
+   * ``custom`` (the BYO OpenAI-compatible escape hatch) is **not**
+   * unconditionally included — it's noise for the 99% of users who
+   * don't run their own gateway. We only put it in the list when:
+   *   - it's the user's current main provider (``diskProvider === "custom"``)
+   *   - or the user explicitly opened its editor (``hProvider === "custom"``)
+   * The "+ Custom endpoint" affordance under the list is the entry
+   * point for first-time activation. ``customVisible`` is also
+   * exported so the JSX can decide whether to render that affordance.
+   */
+  const sidebarGroups = useMemo(() => {
+    const hp = hProvider.trim();
+    const all: string[] = [];
+    const seen = new Set<string>();
+    const push = (slug: string) => {
+      const s = slug.trim();
+      if (!s || seen.has(s) || s === "auto") return;
+      seen.add(s);
+      all.push(s);
+    };
+    for (const id of catalog?.config_provider_ids ?? []) push(id);
+    for (const id of catalog?.env_ready_provider_ids ?? []) push(id);
+    for (const id of catalog?.provider_ids ?? []) {
+      if (id !== "custom") push(id);
+    }
+    if (hp && hp !== "custom") push(hp);
+    const customVisible = diskProvider === "custom" || hp === "custom";
+    if (customVisible) push("custom");
+
+    const configured = all.filter((s) => configuredSlugSet.has(s));
+    const available = all.filter((s) => !configuredSlugSet.has(s));
+    return { configured, available, customVisible };
+  }, [
+    catalog?.config_provider_ids,
+    catalog?.env_ready_provider_ids,
+    catalog?.provider_ids,
+    configuredSlugSet,
+    diskProvider,
+    hProvider,
+  ]);
+
   function providerOptionLabel(id: string): string {
-    if (id === "auto") return "Auto-pick provider based on configured keys";
-    if (id === "custom") return "Custom OpenAI-compatible endpoint (set the API URL below)";
+    if (id === "custom") return "Custom OpenAI-compatible endpoint";
     const tui = canonicalLabelBySlug.get(id);
     if (tui) return tui;
     if (configSlugSet.has(id)) return `${id} (already in your Hermes config)`;
-    if (envReadySlugSet.has(id)) return `${id} (key set in plugin .env)`;
+    if (envReadySlugSet.has(id)) return `${id} (key saved in ~/.hermes/.env)`;
     return id;
   }
 
   /**
-   * Models from all "active" providers: explicitly configured ones +
-   * the current main-model provider (which may not be in config_provider_ids
-   * when providers: {} is empty but model.provider is set).
+   * Providers the user explicitly configured *in this extension* (or
+   * directly in ``~/.hermes/config.yaml``), plus whichever provider
+   * is currently selected as the main / aux model. Deliberately
+   * excludes ambient-authenticated rows (Copilot's built-in OAuth,
+   * Anthropic's ``~/.claude`` OAuth, AWS SDK creds, …) — those work
+   * for Hermes the runtime but aren't "configured here", so listing
+   * them surprises users who never touched the panel.
    */
   const allCatalogModels = useMemo(() => {
     const candidates = new Set<string>([
@@ -323,7 +397,6 @@ export function HermesModelConfigTab() {
     if (diskProvider && diskProvider !== "auto" && diskProvider !== "custom") {
       candidates.add(diskProvider);
     }
-    // Also include providers used in aux slots
     if (auxSlots) {
       for (const slot of AUXILIARY_SLOT_NAMES) {
         const p = auxSlots[slot]?.provider?.trim();
@@ -354,13 +427,12 @@ export function HermesModelConfigTab() {
   const showHermesModelLoading =
     !mainLoading &&
     hProvider.trim() !== "" &&
-    hProvider.trim() !== "auto" &&
     providerCliLoading;
 
   // ── Load provider models when provider panel changes ──────────────────
   const loadProviderModels = useCallback(async (refresh: boolean) => {
     const p = hProvider.trim();
-    if (!p || p === "auto") {
+    if (!p) {
       setProviderCliModels([]);
       setProviderCliMeta(null);
       setProviderCliLoading(false);
@@ -395,7 +467,7 @@ export function HermesModelConfigTab() {
   useEffect(() => {
     if (mainLoading) return;
     const p = hProvider.trim();
-    if (!p || p === "auto") {
+    if (!p) {
       setProviderCliModels([]);
       setProviderCliMeta(null);
       setProviderCliLoading(false);
@@ -406,92 +478,96 @@ export function HermesModelConfigTab() {
     void loadProviderModels(false);
   }, [mainLoading, hProvider, loadProviderModels]);
 
-  // ── Load API keys when provider changes (bridge resolves allowed keys) ─
+  // ── Resolve credentials for the active provider ───────────────────────
+  // Cache-first: if we've fetched this slug before in the current session,
+  // restore drafts from cache and render instantly with no loading state.
+  // Only fetch when it's genuinely the first look at this provider.
   useEffect(() => {
     const p = hProvider.trim();
-    if (!p || p === "auto") {
-      setCredentialKeys([]);
+    setKeysError(null);
+    if (!p) {
       setKeyDrafts({});
       setKeysLoading(false);
-      setKeysError(null);
+      return;
+    }
+    const cached = credentialsCache[p];
+    if (cached) {
+      const drafts: Record<string, string> = {};
+      for (const f of cached.fields) drafts[f.key] = f.value;
+      setKeyDrafts(drafts);
+      setKeysLoading(false);
       return;
     }
     let cancelled = false;
+    setKeyDrafts({});
     setKeysLoading(true);
-    setKeysError(null);
-    if (skipNextCredentialsFetch.current) {
-      skipNextCredentialsFetch.current = false;
-      setKeysLoading(false);
-      return;
-    }
-    void getHermesMainProviderSettings(p).then((r) => {
+    void getHermesProviderCredentials(p).then((r) => {
       if (cancelled) return;
       setKeysLoading(false);
       if (!r.ok) {
-        setKeysError(r.error || "Failed to read keys");
-        setCredentialKeys([]);
-        setKeyDrafts({});
+        setKeysError(r.error || "Failed to read credentials");
         return;
       }
-      const c = r.credentials;
-      setCredentialKeys([...(c?.keys ?? [])]);
-      setKeyDrafts({ ...(c?.values ?? {}) });
+      setCredentialsCache((prev) => ({
+        ...prev,
+        [p]: { fields: r.fields, authHint: r.auth_hint },
+      }));
+      const drafts: Record<string, string> = {};
+      for (const f of r.fields) drafts[f.key] = f.value;
+      setKeyDrafts(drafts);
     });
     return () => {
       cancelled = true;
     };
+    // We intentionally don't depend on credentialsCache — a fetched
+    // entry would otherwise re-trigger this effect and clobber the
+    // user's drafts. Cache reads happen the next time hProvider flips.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hProvider]);
 
-  // ── Initial load ──────────────────────────────────────────────────────
+  // ── Initial load — three independent fetches, no bundling ─────────────
   useEffect(() => {
-    void (async () => {
-      setMainLoading(true);
-      setMainError(null);
-      try {
-        const [main, auxResp, cat] = await Promise.all([
-          getHermesMainProviderSettings(),
-          getHermesAuxiliaryModels(),
-          getHermesModelCatalog(false),
-        ]);
-        if (cat.ok) setCatalog(cat);
-        if (main.ok) {
-          const dp = (main.provider || "auto").trim() || "auto";
-          const dm = (main.model || "").trim();
-          const bu = (main.base_url || "").trim();
-          setHProvider(dp);
-          setHModel(dm);
-          setDiskProvider(dp);
-          setDiskModel(dm);
-          setDiskBaseUrl(bu);
-          setHBaseUrl(bu);
-          setMainContext({
-            auto: main.auto_context_length ?? 0,
-            config: main.config_context_length ?? 0,
-            effective: main.effective_context_length ?? 0,
-          });
-          setMainCapabilities(main.capabilities ?? {});
-          setMainError(typeof main.error === "string" && main.error ? main.error : null);
-          const c = main.credentials;
-          if (c && (c.keys?.length ?? 0) > 0) {
-            setCredentialKeys([...(c.keys ?? [])]);
-            setKeyDrafts({ ...(c.values ?? {}) });
-            skipNextCredentialsFetch.current = true;
-          }
-        } else {
-          setMainError(main.error || "Failed to read Hermes config");
-        }
-        if (auxResp.ok) {
-          setAuxSlots(tasksToMap(auxResp));
-        } else {
-          setAuxError(auxResp.error || null);
-        }
-      } catch (e) {
-        setMainError(String((e as Error)?.message || e));
-      } finally {
-        setMainLoading(false);
-        setCatalogLoading(false);
+    let cancelled = false;
+    setMainLoading(true);
+    setMainError(null);
+    void getHermesMainModelInfo().then((main) => {
+      if (cancelled) return;
+      setMainLoading(false);
+      if (!main.ok) {
+        setMainError(main.error || "Failed to read main model");
+        return;
       }
-    })();
+      const dp = (main.provider || "auto").trim() || "auto";
+      const dm = (main.model || "").trim();
+      const bu = (main.base_url || "").trim();
+      setDiskProvider(dp);
+      setDiskModel(dm);
+      setDiskBaseUrl(bu);
+      setCustomDraftModel(dp === "custom" ? dm : "");
+      setCustomDraftBaseUrl(dp === "custom" ? bu : "");
+      setMainContext({
+        auto: main.auto_context_length ?? 0,
+        config: main.config_context_length ?? 0,
+        effective: main.effective_context_length ?? 0,
+      });
+      setMainCapabilities(main.capabilities ?? {});
+    });
+    void getHermesModelCatalog(false).then((cat) => {
+      if (cancelled) return;
+      setCatalogLoading(false);
+      if (cat.ok) setCatalog(cat);
+    });
+    void getHermesAuxiliaryModels().then((auxResp) => {
+      if (cancelled) return;
+      if (auxResp.ok) {
+        setAuxSlots(tasksToMap(auxResp));
+      } else {
+        setAuxError(auxResp.error || null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // ── Refresh catalog + provider models ─────────────────────────────────
@@ -502,11 +578,16 @@ export function HermesModelConfigTab() {
       if (c.ok) setCatalog(c);
       await loadProviderModels(true);
       const p = hProvider.trim();
-      if (p && p !== "auto") {
-        const dv = await getHermesMainProviderSettings(p);
-        if (dv.ok && dv.credentials) {
-          setCredentialKeys([...(dv.credentials.keys ?? [])]);
-          setKeyDrafts({ ...(dv.credentials.values ?? {}) });
+      if (p) {
+        const dv = await getHermesProviderCredentials(p);
+        if (dv.ok) {
+          setCredentialsCache((prev) => ({
+            ...prev,
+            [p]: { fields: dv.fields, authHint: dv.auth_hint },
+          }));
+          const drafts: Record<string, string> = {};
+          for (const f of dv.fields) drafts[f.key] = f.value;
+          setKeyDrafts(drafts);
         }
       }
     } finally {
@@ -514,45 +595,40 @@ export function HermesModelConfigTab() {
     }
   }
 
-  // ── Provider panel: save model + base URL + credentials (single bridge call) ─
-  async function saveProviderSettings() {
+  /**
+   * Save credentials for the current provider. This writes ONLY to the
+   * plugin ``.env``. It never touches ``config.yaml: model.*`` — setting
+   * the main model is exclusively the Model Config panel's job (the ⭐
+   * action, or the custom-main editor).
+   */
+  async function saveProviderCredentials() {
+    const p = hProvider.trim();
+    if (!p || credentialFields.length === 0) return;
     setHSaving(true);
     setHError(null);
     setKeysError(null);
     try {
-      const body: {
-        provider: string;
-        model: string;
-        base_url: string | null;
-        credentials?: Record<string, string>;
-      } = {
-        provider: hProvider.trim() || "auto",
-        model: hModel.trim(),
-        base_url: hBaseUrl.trim() || null,
-      };
-      if (credentialKeys.length > 0) {
-        const credentials: Record<string, string> = {};
-        for (const k of credentialKeys) credentials[k] = keyDrafts[k] ?? "";
-        body.credentials = credentials;
-      }
-      const r = await saveHermesMainProviderSettings(body);
+      const values: Record<string, string> = {};
+      for (const f of credentialFields) values[f.key] = keyDrafts[f.key] ?? "";
+      const r = await saveHermesProviderCredentials(p, values);
       if (!r.ok) {
         setHError(r.error || "Save failed");
         return;
       }
-      void loadProviderModels(true);
-      const dp = (r.provider || hProvider || "auto").trim() || "auto";
-      const dm = (r.model ?? hModel).trim();
-      const dbu = (r.base_url ?? hBaseUrl).trim();
-      setDiskProvider(dp);
-      setDiskModel(dm);
-      setDiskBaseUrl(dbu);
-      setMainContext({
-        auto: r.auto_context_length ?? 0,
-        config: r.config_context_length ?? 0,
-        effective: r.effective_context_length ?? 0,
+      // Overwrite the cached snapshot so a subsequent provider switch
+      // re-reads the saved values instead of pre-save state.
+      setCredentialsCache((prev) => {
+        const cached = prev[p];
+        if (!cached) return prev;
+        return {
+          ...prev,
+          [p]: {
+            ...cached,
+            fields: cached.fields.map((f) => ({ ...f, value: values[f.key] ?? "" })),
+          },
+        };
       });
-      setMainCapabilities(r.capabilities ?? {});
+      void loadProviderModels(true);
       setHSaved(true);
       setTimeout(() => setHSaved(false), 1500);
     } finally {
@@ -563,18 +639,9 @@ export function HermesModelConfigTab() {
   function selectProviderSection(slug: string) {
     setSection(slug);
     setHProvider(slug);
-    const sp = (slug || "auto").trim() || "auto";
-    const dp = (diskProvider || "auto").trim() || "auto";
-    if (sp === dp) {
-      setHModel(diskModel);
-      setHBaseUrl(diskBaseUrl);
-    } else {
-      setHModel("");
-      setHBaseUrl("");
-    }
   }
 
-  // ── Model Config: set default model ──────────────────────────────────
+  // ── Model Config: assign a catalog model to the Main slot ──────────────
   async function setDefaultModel(provider: string, modelId: string) {
     const p = provider.trim();
     const id = modelId.trim();
@@ -582,13 +649,17 @@ export function HermesModelConfigTab() {
     setMcSaving(true);
     setMcError(null);
     try {
+      // Clearing base_url on every canonical-provider switch keeps a
+      // stale ``model.base_url`` from leaking into the new provider.
+      // The custom-main editor below has its own write path that
+      // explicitly sets base_url; that's the only place it gets set.
       const r = await setHermesAgentMainModel({
         provider: p || "auto",
         model: id,
         base_url: null,
       });
       if (!r.ok) {
-        setMcError(r.error || "Failed to set default model");
+        setMcError(r.error || "Failed to set main model");
         return;
       }
       const dp = (r.provider || p || "auto").trim() || "auto";
@@ -603,9 +674,39 @@ export function HermesModelConfigTab() {
         effective: r.effective_context_length ?? 0,
       });
       setMainCapabilities(r.capabilities ?? {});
-      setHProvider(dp);
-      setHModel(dm);
-      setHBaseUrl(dbu);
+      setMcSaved(true);
+      setTimeout(() => setMcSaved(false), 1500);
+    } finally {
+      setMcSaving(false);
+    }
+  }
+
+  /** Set the main model to a `custom` endpoint with an explicit base URL. */
+  async function setCustomMainModel() {
+    const id = customDraftModel.trim();
+    const bu = customDraftBaseUrl.trim();
+    if (!id || !bu) return;
+    setMcSaving(true);
+    setMcError(null);
+    try {
+      const r = await setHermesAgentMainModel({
+        provider: "custom",
+        model: id,
+        base_url: bu,
+      });
+      if (!r.ok) {
+        setMcError(r.error || "Failed to set custom main model");
+        return;
+      }
+      setDiskProvider("custom");
+      setDiskModel(id);
+      setDiskBaseUrl(bu);
+      setMainContext({
+        auto: r.auto_context_length ?? 0,
+        config: r.config_context_length ?? 0,
+        effective: r.effective_context_length ?? 0,
+      });
+      setMainCapabilities(r.capabilities ?? {});
       setMcSaved(true);
       setTimeout(() => setMcSaved(false), 1500);
     } finally {
@@ -646,6 +747,36 @@ export function HermesModelConfigTab() {
       if (next) setAuxSlots(next);
     } finally {
       setAuxSavingSlot(null);
+    }
+  }
+
+  /** Reset main back to ``auto`` — same shape as ``clearAuxSlot``, used
+   * by the ModelSlotRow's ✕ button on the Main row.
+   */
+  async function clearMainModel() {
+    setMcSaving(true);
+    setMcError(null);
+    try {
+      const r = await setHermesAgentMainModel({
+        provider: "auto",
+        model: "",
+        base_url: null,
+      });
+      if (!r.ok) {
+        setMcError(r.error || "Clear failed");
+        return;
+      }
+      setDiskProvider((r.provider || "auto").trim() || "auto");
+      setDiskModel((r.model ?? "").trim());
+      setDiskBaseUrl((r.base_url ?? "").trim());
+      setMainContext({
+        auto: r.auto_context_length ?? 0,
+        config: r.config_context_length ?? 0,
+        effective: r.effective_context_length ?? 0,
+      });
+      setMainCapabilities(r.capabilities ?? {});
+    } finally {
+      setMcSaving(false);
     }
   }
 
@@ -712,54 +843,64 @@ export function HermesModelConfigTab() {
               <span className="text-[11px] font-semibold">Model config</span>
               <span className="line-clamp-1 text-left text-[10px] leading-snug text-muted-foreground">
                 {diskModel
-                  ? `Default: ${diskModel}`
-                  : "Set default and auxiliary models"}
+                  ? `Main: ${diskModel}`
+                  : "Set main and auxiliary models"}
               </span>
             </Button>
 
             {/* Provider list — small section label inside the list, not a full h-14 shell row */}
             <ScrollArea className="min-h-0 flex-1">
               <nav className="flex flex-col">
-                <p className="px-3 pt-2 pb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-                  Providers
-                </p>
-                {orderedSidebarProviders.map((slug) => {
-                  const active = section === slug;
-                  const isDisk = slug === diskProvider && slug !== "auto";
-                  const showConfiguredBadge = configuredSlugSet.has(slug);
-                  return (
-                    <Button
-                      key={slug}
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className={cn(
-                        "h-auto min-h-0 w-full flex-col items-stretch gap-1 rounded-none border-0 px-3 py-2.5 text-left font-normal shadow-none",
-                        active
-                          ? "bg-muted text-foreground hover:bg-muted"
-                          : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
-                      )}
-                      onClick={() => selectProviderSection(slug)}
-                    >
-                      <span className="flex flex-wrap items-center gap-1">
-                        <span className="font-mono text-[11px]">{slug}</span>
-                        {isDisk ? (
-                          <Badge variant="default" className="h-4 px-1 text-[9px] leading-none">
-                            Default
-                          </Badge>
-                        ) : null}
-                        {showConfiguredBadge ? (
-                          <Badge variant="outline" className="h-4 px-1 text-[9px] leading-none">
-                            Configured
-                          </Badge>
-                        ) : null}
-                      </span>
-                      <span className="line-clamp-2 text-left text-[10px] leading-snug text-muted-foreground">
-                        {providerOptionLabel(slug)}
-                      </span>
-                    </Button>
-                  );
-                })}
+                {sidebarGroups.configured.length > 0 && (
+                  <>
+                    <p className="px-3 pt-2 pb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                      Configured
+                    </p>
+                    {sidebarGroups.configured.map((slug) => (
+                      <SidebarProviderItem
+                        key={slug}
+                        slug={slug}
+                        active={section === slug}
+                        label={providerOptionLabel(slug)}
+                        onClick={() => selectProviderSection(slug)}
+                      />
+                    ))}
+                    <div className="my-1 mx-3 border-t border-border/40" />
+                  </>
+                )}
+                {sidebarGroups.available.length > 0 && (
+                  <>
+                    <p className="px-3 pt-2 pb-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                      Available
+                    </p>
+                    {sidebarGroups.available.map((slug) => (
+                      <SidebarProviderItem
+                        key={slug}
+                        slug={slug}
+                        active={section === slug}
+                        label={providerOptionLabel(slug)}
+                        onClick={() => selectProviderSection(slug)}
+                      />
+                    ))}
+                  </>
+                )}
+                {/*
+                 * "+ Custom endpoint" affordance — collapsed entry
+                 * point for the BYO OpenAI-compatible gateway editor.
+                 * Hidden once activated (the editor appears as a
+                 * regular sidebar item via ``customVisible``), so it
+                 * never duplicates with itself.
+                 */}
+                {!sidebarGroups.customVisible && (
+                  <button
+                    type="button"
+                    onClick={() => selectProviderSection("custom")}
+                    className="mt-2 mx-3 mb-3 inline-flex items-center gap-1 self-start rounded-full px-2 py-0.5 text-[10px] text-muted-foreground/70 transition-colors hover:bg-muted/40 hover:text-foreground"
+                  >
+                    <span aria-hidden>+</span>
+                    <span>Custom endpoint</span>
+                  </button>
+                )}
               </nav>
             </ScrollArea>
           </aside>
@@ -771,6 +912,7 @@ export function HermesModelConfigTab() {
                 catalog={catalog}
                 diskProvider={diskProvider}
                 diskModel={diskModel}
+                diskBaseUrl={diskBaseUrl}
                 mainContext={mainContext}
                 mainCapabilities={mainCapabilities}
                 auxSlots={auxSlots}
@@ -783,18 +925,18 @@ export function HermesModelConfigTab() {
                 allCatalogModels={allCatalogModels}
                 canonicalLabelBySlug={canonicalLabelBySlug}
                 onSetDefault={setDefaultModel}
+                onClearMain={clearMainModel}
                 onSetAuxSlot={setAuxSlot}
                 onClearAuxSlot={clearAuxSlot}
               />
             ) : (
               <ProviderPanel
                 hProvider={hProvider}
-                hModel={hModel}
-                hBaseUrl={hBaseUrl}
                 hSaving={hSaving}
                 hSaved={hSaved}
                 hError={hError}
-                credentialKeys={credentialKeys}
+                credentialFields={credentialFields}
+                credentialAuthHint={credentialAuthHint}
                 keyDrafts={keyDrafts}
                 keysLoading={keysLoading}
                 keysError={keysError}
@@ -803,12 +945,18 @@ export function HermesModelConfigTab() {
                 modelEntriesForProvider={modelEntriesForProvider}
                 providerCliMeta={providerCliMeta}
                 providerOptionLabel={providerOptionLabel}
-                onHModelChange={setHModel}
-                onHBaseUrlChange={setHBaseUrl}
                 onKeyDraftChange={(k, v) =>
                   setKeyDrafts((prev) => ({ ...prev, [k]: v }))
                 }
-                onSave={() => void saveProviderSettings()}
+                onSave={() => void saveProviderCredentials()}
+                onRefreshModels={() => void loadProviderModels(true)}
+                customDraftModel={customDraftModel}
+                customDraftBaseUrl={customDraftBaseUrl}
+                customSaving={mcSaving}
+                customError={mcError}
+                onCustomDraftModelChange={setCustomDraftModel}
+                onCustomDraftBaseUrlChange={setCustomDraftBaseUrl}
+                onSetCustomMain={setCustomMainModel}
               />
             )}
           </ScrollArea>
@@ -818,8 +966,38 @@ export function HermesModelConfigTab() {
   );
 }
 
+function SidebarProviderItem({
+  slug,
+  active,
+  label,
+  onClick,
+}: {
+  slug: string;
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className={cn(
+        "h-auto min-h-0 w-full flex-col items-stretch gap-1 rounded-none border-0 px-3 py-2.5 text-left font-normal shadow-none",
+        active
+          ? "bg-muted text-foreground hover:bg-muted"
+          : "text-muted-foreground hover:bg-muted/70 hover:text-foreground",
+      )}
+      onClick={onClick}
+    >
+      <span className="line-clamp-2 text-[11px] font-medium">{label}</span>
+      <span className="font-mono text-[10px] text-muted-foreground">{slug}</span>
+    </Button>
+  );
+}
+
 /**
- * Inline chip row under the "Default model" card. Surfaces:
+ * Inline chip row under the "Main model" card. Surfaces:
  *
  *   - **Context-length chip**: shows `effective` formatted as ``200K``;
  *     when the user has a ``model.context_length`` override in
@@ -923,9 +1101,9 @@ interface ModelConfigPanelProps {
   catalog: HermesModelCatalogResponse | null;
   diskProvider: string;
   diskModel: string;
+  diskBaseUrl: string;
   /**
-   * Context-length triple from the bridge (mirrors upstream
-   * ``/api/model/info``). ``auto`` is what
+   * Context-length triple from ``/hermes/model/info``. ``auto`` is what
    * ``agent.model_metadata.get_model_context_length`` resolved; ``config``
    * is the user's ``model.context_length`` override from ``config.yaml``;
    * ``effective`` is what the agent will actually use. All-zero means
@@ -950,6 +1128,7 @@ interface ModelConfigPanelProps {
   allCatalogModels: { provider: string; entry: HermesCatalogModelEntry }[];
   canonicalLabelBySlug: Map<string, string>;
   onSetDefault: (provider: string, modelId: string) => Promise<void>;
+  onClearMain: () => Promise<void>;
   onSetAuxSlot: (slot: AuxiliarySlotName, provider: string, model: string) => Promise<void>;
   onClearAuxSlot: (slot: AuxiliarySlotName) => Promise<void>;
 }
@@ -958,6 +1137,7 @@ function ModelConfigPanel({
   catalog,
   diskProvider,
   diskModel,
+  diskBaseUrl,
   mainContext,
   mainCapabilities,
   auxSlots,
@@ -970,6 +1150,7 @@ function ModelConfigPanel({
   allCatalogModels,
   canonicalLabelBySlug,
   onSetDefault,
+  onClearMain,
   onSetAuxSlot,
   onClearAuxSlot,
 }: ModelConfigPanelProps) {
@@ -1013,31 +1194,45 @@ function ModelConfigPanel({
         </p>
       )}
 
-      {/* ── Default model ── */}
+      {/* ── Main model ── */}
       <section className="space-y-2">
         <div className="flex items-center gap-2">
-          <Star className="h-4 w-4 text-amber-500" />
-          <h3 className="text-sm font-semibold text-foreground">Default model</h3>
+          <Crown className="h-4 w-4 text-amber-500" />
+          <h3 className="text-sm font-semibold text-foreground">Main model</h3>
           {mcSaved && (
             <span className="text-[11px] text-[hsl(var(--success))]">Saved</span>
           )}
         </div>
-        {diskModel ? (
-          <div className="rounded-lg border border-border bg-muted/20 px-4 py-3">
-            <p className="break-all font-mono text-sm text-foreground">{diskModel}</p>
-            <p className="mt-0.5 text-[11px] text-muted-foreground">{providerLabel(diskProvider)}</p>
-            <MainModelChips
-              context={mainContext}
-              capabilities={mainCapabilities}
-            />
-          </div>
-        ) : (
-          <div className="rounded-lg border border-dashed border-border/80 bg-muted/10 px-4 py-3">
-            <p className="text-xs text-muted-foreground">
-              Not set — pick one from the model list below by clicking <Star className="inline h-3 w-3" />.
-            </p>
-          </div>
-        )}
+        <ModelSlotRow
+          label="Main"
+          provider={diskProvider}
+          model={diskModel}
+          unsetHint="Not set — pick a model below"
+          isSaving={mcSaving}
+          isSaved={mcSaved}
+          allCatalogModels={allCatalogModels}
+          canonicalLabelBySlug={canonicalLabelBySlug}
+          disabled={saving}
+          onSet={(p, m) => void onSetDefault(p, m)}
+          onClear={() => void onClearMain()}
+          detail={
+            (diskBaseUrl ||
+              mainContext.effective > 0 ||
+              Object.keys(mainCapabilities).length > 0) ? (
+              <div className="space-y-0.5">
+                {diskBaseUrl ? (
+                  <p className="break-all font-mono text-[10px] text-muted-foreground">
+                    {diskBaseUrl}
+                  </p>
+                ) : null}
+                <MainModelChips
+                  context={mainContext}
+                  capabilities={mainCapabilities}
+                />
+              </div>
+            ) : null
+          }
+        />
       </section>
 
       {/* ── Auxiliary models ── */}
@@ -1065,16 +1260,17 @@ function ModelConfigPanel({
               <p className="text-xs text-muted-foreground">Auxiliary model configuration unavailable (bridge not connected).</p>
             ) : (
               AUXILIARY_SLOT_NAMES.map((slot) => (
-                <AuxSlotRow
+                <ModelSlotRow
                   key={slot}
-                  slot={slot}
-                  slotData={auxSlots[slot]}
+                  label={AUXILIARY_SLOT_LABELS[slot]}
+                  provider={auxSlots[slot]?.provider ?? ""}
+                  model={auxSlots[slot]?.model ?? ""}
                   isSaving={auxSavingSlot === slot}
                   isSaved={auxSavedSlot === slot}
                   allCatalogModels={allCatalogModels}
                   canonicalLabelBySlug={canonicalLabelBySlug}
                   disabled={saving}
-                  onSet={(provider, model) => void onSetAuxSlot(slot, provider, model)}
+                  onSet={(p, m) => void onSetAuxSlot(slot, p, m)}
                   onClear={() => void onClearAuxSlot(slot)}
                 />
               ))
@@ -1088,7 +1284,7 @@ function ModelConfigPanel({
         <div>
           <h3 className="text-sm font-semibold text-foreground">All available models</h3>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
-            From configured providers; click <Star className="inline h-3 w-3 text-amber-500" /> to set as default.
+            From configured providers; click <MoreHorizontal className="inline h-3 w-3" /> to assign a model to Main or any auxiliary slot.
           </p>
         </div>
 
@@ -1099,90 +1295,84 @@ function ModelConfigPanel({
             </p>
           </div>
         ) : (
-          <>
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search model id or provider…"
-              className="text-xs"
-            />
+          <div className="overflow-hidden rounded-lg border border-border bg-muted/10">
+            {/*
+             * Search lives inside the same card as the list — they're
+             * one functional unit (filter ↔ result), not two siblings.
+             * Border-bottom is the only separator; the Input itself
+             * drops its native chrome so it reads as a row inside the
+             * card, not a nested control.
+             */}
+            <div className="border-b border-border/60 bg-background/40">
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search model id or provider…"
+                className="h-9 border-0 bg-transparent text-xs shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+              />
+            </div>
             {groupedModels.size === 0 ? (
-              <p className="text-xs text-muted-foreground">No matching models.</p>
+              <p className="px-3 py-4 text-xs text-muted-foreground">
+                No matching models.
+              </p>
             ) : (
-              <div className="space-y-4">
-                {[...groupedModels.entries()].map(([provider, models]) => (
-                  <div key={provider} className="space-y-1">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                      {provider}
-                      {canonicalLabelBySlug.get(provider)
-                        ? ` — ${canonicalLabelBySlug.get(provider)}`
-                        : ""}
-                      {catalog?.config_provider_ids?.includes(provider) ||
-                      catalog?.env_ready_provider_ids?.includes(provider) ? (
-                        <Badge
-                          variant="outline"
-                          className="ml-1.5 h-3.5 px-1 text-[9px] leading-none"
-                        >
-                          Configured
-                        </Badge>
-                      ) : null}
-                    </p>
-                    <div className="rounded-lg border border-border bg-muted/10">
-                      <ul className="flex flex-col divide-y divide-border/60">
-                        {models.map((entry) => {
-                          const isDefault =
-                            entry.id === diskModel && provider === diskProvider;
-                          return (
-                            <li
-                              key={entry.id}
-                              className={cn(
-                                "flex items-start gap-2 px-3 py-2 text-xs",
-                                isDefault && "bg-amber-50/60 dark:bg-amber-900/10",
-                              )}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <p className="break-all font-mono text-[11px] leading-snug">
-                                  {entry.id}
+              /*
+               * Single flat list. Provider names are sticky subheader
+               * rows inside the same ``<ul>``, not card containers
+               * around their own sub-list — the model is the unit of
+               * attention; provider is just an organizational hint.
+               */
+              <ul className="divide-y divide-border/60">
+                {[...groupedModels.entries()].map(([provider, models]) => {
+                  return (
+                    <Fragment key={provider}>
+                      <li className="px-3 py-1 text-[9px] uppercase tracking-wider text-muted-foreground">
+                        {canonicalLabelBySlug.get(provider) || provider}
+                      </li>
+                      {models.map((entry) => {
+                        const isDefault =
+                          entry.id === diskModel && provider === diskProvider;
+                        return (
+                          <li
+                            key={`${provider}/${entry.id}`}
+                            className={cn(
+                              "flex items-start gap-2 px-3 py-2 text-xs",
+                              isDefault && "bg-amber-50/60 dark:bg-amber-900/10",
+                            )}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <p className="break-all font-mono text-[11px] leading-snug">
+                                {entry.id}
+                              </p>
+                              {entry.description?.trim() ? (
+                                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                                  {entry.description.trim()}
                                 </p>
-                                {entry.description?.trim() ? (
-                                  <p className="mt-0.5 text-[10px] text-muted-foreground">
-                                    {entry.description.trim()}
-                                  </p>
-                                ) : null}
-                                <ModelEntryMetadataLine meta={entry.metadata} />
-                                {isDefault && (
-                                  <p className="mt-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                                    Current default
-                                  </p>
-                                )}
-                              </div>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className={cn(
-                                  "h-7 w-7 shrink-0 rounded-full transition-colors",
-                                  isDefault
-                                    ? "text-amber-500 hover:bg-amber-100/50 dark:hover:bg-amber-900/20"
-                                    : "text-muted-foreground/50 hover:bg-amber-100/50 hover:text-amber-500 dark:hover:bg-amber-900/20",
-                                )}
-                                disabled={saving}
-                                title="Set as default model"
-                                aria-label="Set as default model"
-                                onClick={() => void onSetDefault(provider, entry.id)}
-                              >
-                                <Star className="h-3.5 w-3.5" />
-                              </Button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                              ) : null}
+                              <ModelEntryMetadataLine meta={entry.metadata} />
+                              {isDefault && (
+                                <p className="mt-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                                  Current main
+                                </p>
+                              )}
+                            </div>
+                            <AssignToSlotMenu
+                              disabled={saving}
+                              isMain={isDefault}
+                              onAssignMain={() => void onSetDefault(provider, entry.id)}
+                              onAssignAux={(slot) =>
+                                void onSetAuxSlot(slot, provider, entry.id)
+                              }
+                            />
+                          </li>
+                        );
+                      })}
+                    </Fragment>
+                  );
+                })}
+              </ul>
             )}
-          </>
+          </div>
         )}
       </section>
     </div>
@@ -1190,24 +1380,37 @@ function ModelConfigPanel({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Auxiliary Slot Row
+// Model Slot Row — used for Main and every auxiliary slot
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface AuxSlotRowProps {
-  slot: AuxiliarySlotName;
-  slotData: AuxiliaryTask;
+interface ModelSlotRowProps {
+  /** Display label, e.g. "Main", "Vision", "Web Extract". */
+  label: string;
+  /** Current provider slug. Empty / "auto" → unconfigured. */
+  provider: string;
+  /** Current model id. Empty → unconfigured. */
+  model: string;
+  /** Optional richer detail rendered below the provider/model line —
+   * used by Main to show context-window chips, base URL, etc. */
+  detail?: React.ReactNode;
+  /** Shown when no model is set, instead of "Inherits main model". */
+  unsetHint?: string;
   isSaving: boolean;
   isSaved: boolean;
   allCatalogModels: { provider: string; entry: HermesCatalogModelEntry }[];
   canonicalLabelBySlug: Map<string, string>;
   disabled: boolean;
   onSet: (provider: string, model: string) => void;
-  onClear: () => void;
+  /** Optional clear — Main has it too (sets back to ``auto``). */
+  onClear?: () => void;
 }
 
-function AuxSlotRow({
-  slot,
-  slotData,
+function ModelSlotRow({
+  label,
+  provider,
+  model,
+  detail,
+  unsetHint = "Inherits main model",
   isSaving,
   isSaved,
   allCatalogModels,
@@ -1215,22 +1418,36 @@ function AuxSlotRow({
   disabled,
   onSet,
   onClear,
-}: AuxSlotRowProps) {
+}: ModelSlotRowProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const dropRef = useRef<HTMLDivElement>(null);
 
-  const label = AUXILIARY_SLOT_LABELS[slot];
-  const hasModel = Boolean(slotData?.model);
+  const hasModel = Boolean(model);
 
   const filteredModels = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return allCatalogModels;
     return allCatalogModels.filter(
       ({ provider, entry }) =>
-        entry.id.toLowerCase().includes(q) || provider.toLowerCase().includes(q),
+        entry.id.toLowerCase().includes(q) ||
+        provider.toLowerCase().includes(q) ||
+        (entry.description || "").toLowerCase().includes(q),
     );
   }, [allCatalogModels, search]);
+
+  /** Group filtered models by provider so we can render the same
+   * "provider sub-header + model rows" layout the main "All available
+   * models" list uses. Picker and main list now share their rendering
+   * shape — same source data, same display. */
+  const groupedFilteredModels = useMemo(() => {
+    const map = new Map<string, HermesCatalogModelEntry[]>();
+    for (const { provider: pid, entry } of filteredModels) {
+      if (!map.has(pid)) map.set(pid, []);
+      map.get(pid)!.push(entry);
+    }
+    return map;
+  }, [filteredModels]);
 
   useEffect(() => {
     if (!open) return;
@@ -1250,20 +1467,18 @@ function AuxSlotRow({
           <p className="text-[11px] font-medium text-foreground">{label}</p>
           {hasModel ? (
             <p className="truncate font-mono text-[10px] text-muted-foreground">
-              {slotData.provider && slotData.provider !== "auto"
-                ? `${slotData.provider} / `
-                : ""}
-              {slotData.model}
+              {provider && provider !== "auto" ? `${provider} / ` : ""}
+              {model}
             </p>
           ) : (
-            <p className="text-[10px] text-muted-foreground">Inherits main model</p>
+            <p className="text-[10px] text-muted-foreground">{unsetHint}</p>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {isSaved && (
             <span className="text-[10px] text-[hsl(var(--success))]">Saved</span>
           )}
-          {hasModel && (
+          {hasModel && onClear && (
             <Button
               type="button"
               variant="ghost"
@@ -1288,47 +1503,175 @@ function AuxSlotRow({
               {isSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : "Select"}
             </Button>
             {open && (
-              <div className="absolute right-0 top-7 z-50 w-72 rounded-lg border border-border bg-popover shadow-lg">
-                <div className="border-b border-border p-2">
+              // ``flex flex-col`` so the search input keeps a fixed
+              // height and the model list takes the remaining space.
+              // ``max-h-[24rem]`` caps the whole popover; the inner
+              // ``min-h-0 overflow-y-auto`` is what actually scrolls.
+              // Radix ScrollArea was unreliable here — its viewport
+              // wouldn't pick up a definite height inside the
+              // absolute-positioned popover, so the scrollbar never
+              // appeared even when content overflowed.
+              <div className="absolute right-0 top-7 z-50 flex max-h-[24rem] w-[28rem] max-w-[80vw] flex-col rounded-lg border border-border bg-popover shadow-lg">
+                <div className="shrink-0 border-b border-border/60 bg-background/40">
                   <Input
                     autoFocus
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search models…"
-                    className="h-7 text-xs"
+                    placeholder="Search model id, provider, or description…"
+                    className="h-9 border-0 bg-transparent text-xs shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
                   />
                 </div>
-                <ScrollArea className="max-h-56">
+                <div className="min-h-0 flex-1 overflow-y-auto">
                   {filteredModels.length === 0 ? (
-                    <p className="px-3 py-2 text-xs text-muted-foreground">No matching models</p>
+                    <p className="px-3 py-4 text-xs text-muted-foreground">No matching models</p>
                   ) : (
-                    <ul className="flex flex-col py-1">
-                      {filteredModels.map(({ provider, entry }) => (
-                        <li key={`${provider}/${entry.id}`}>
-                          <button
-                            type="button"
-                            className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-muted/60"
-                            onClick={() => {
-                              onSet(provider, entry.id);
-                              setOpen(false);
-                              setSearch("");
-                            }}
-                          >
-                            <span className="font-mono text-[11px] text-foreground">{entry.id}</span>
-                            <span className="text-[10px] text-muted-foreground">
-                              {canonicalLabelBySlug.get(provider) ?? provider}
-                            </span>
-                          </button>
-                        </li>
-                      ))}
+                    // Mirror the "All available models" list exactly:
+                    // provider sub-header rows + model rows with id +
+                    // description + metadata chips. The button trigger
+                    // wraps a model row so click anywhere on the row
+                    // selects it.
+                    <ul className="divide-y divide-border/60">
+                      {[...groupedFilteredModels.entries()].map(
+                        ([pid, rows]) => (
+                          <Fragment key={pid}>
+                            <li className="px-3 py-1 text-[9px] uppercase tracking-wider text-muted-foreground">
+                              {canonicalLabelBySlug.get(pid) ?? pid}
+                            </li>
+                            {rows.map((entry) => (
+                              <li key={`${pid}/${entry.id}`}>
+                                <button
+                                  type="button"
+                                  className="flex w-full items-start gap-2 px-3 py-2 text-left text-xs hover:bg-muted/60"
+                                  onClick={() => {
+                                    onSet(pid, entry.id);
+                                    setOpen(false);
+                                    setSearch("");
+                                  }}
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <p className="break-all font-mono text-[11px] leading-snug">
+                                      {entry.id}
+                                    </p>
+                                    {entry.description?.trim() ? (
+                                      <p className="mt-0.5 text-[10px] text-muted-foreground">
+                                        {entry.description.trim()}
+                                      </p>
+                                    ) : null}
+                                    <ModelEntryMetadataLine
+                                      meta={entry.metadata}
+                                    />
+                                  </div>
+                                </button>
+                              </li>
+                            ))}
+                          </Fragment>
+                        ),
+                      )}
                     </ul>
                   )}
-                </ScrollArea>
+                </div>
               </div>
             )}
           </div>
         </div>
       </div>
+      {detail ? <div className="mt-1.5">{detail}</div> : null}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AssignToSlotMenu — the catalog-row action that replaces the old "⭐" button.
+// Opens a small popover listing every assignable slot (Main + each aux task);
+// picking one assigns the row's model to that slot. Mirrors the
+// ``ModelSlotRow`` dropdown shape but going the other direction —
+// model → slot instead of slot → model.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function AssignToSlotMenu({
+  disabled,
+  isMain,
+  onAssignMain,
+  onAssignAux,
+}: {
+  disabled: boolean;
+  /** True when this row's model is already the current Main. Just a
+   * visual hint on the trigger; doesn't disable re-assigning. */
+  isMain: boolean;
+  onAssignMain: () => void;
+  onAssignAux: (slot: AuxiliarySlotName) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handle(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0" ref={ref}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className={cn(
+          "h-7 w-7 rounded-full transition-colors",
+          isMain
+            ? "text-amber-500 hover:bg-amber-100/50 dark:hover:bg-amber-900/20"
+            : "text-muted-foreground/60 hover:bg-muted/60 hover:text-foreground",
+        )}
+        disabled={disabled}
+        title={isMain ? "Currently Main — pick another slot to also assign" : "Assign to a slot…"}
+        aria-label="Assign to a slot"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <MoreHorizontal className="h-3.5 w-3.5" />
+      </Button>
+      {open && (
+        <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-border bg-popover shadow-lg">
+          <p className="border-b border-border px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+            Assign as
+          </p>
+          <ul className="flex flex-col py-1">
+            <li>
+              <button
+                type="button"
+                className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs hover:bg-muted/60"
+                onClick={() => {
+                  onAssignMain();
+                  setOpen(false);
+                }}
+              >
+                <Crown className="h-3 w-3 text-amber-500" />
+                Main
+              </button>
+            </li>
+            <li className="my-0.5 mx-2 border-t border-border/50" />
+            {AUXILIARY_SLOT_NAMES.map((slot) => (
+              <li key={slot}>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-xs hover:bg-muted/60"
+                  onClick={() => {
+                    onAssignAux(slot);
+                    setOpen(false);
+                  }}
+                >
+                  <Zap className="h-3 w-3 text-blue-500/70" />
+                  {AUXILIARY_SLOT_LABELS[slot]}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -1339,12 +1682,11 @@ function AuxSlotRow({
 
 interface ProviderPanelProps {
   hProvider: string;
-  hModel: string;
-  hBaseUrl: string;
   hSaving: boolean;
   hSaved: boolean;
   hError: string | null;
-  credentialKeys: string[];
+  credentialFields: HermesProviderCredentialField[];
+  credentialAuthHint: string;
   keyDrafts: Record<string, string>;
   keysLoading: boolean;
   keysError: string | null;
@@ -1357,20 +1699,31 @@ interface ProviderPanelProps {
     pricing_loaded?: boolean;
   } | null;
   providerOptionLabel: (id: string) => string;
-  onHModelChange: (v: string) => void;
-  onHBaseUrlChange: (v: string) => void;
   onKeyDraftChange: (k: string, v: string) => void;
   onSave: () => void;
+  onRefreshModels: () => void;
+  // Custom endpoint (BYO OpenAI-compatible) — only used when
+  // ``hProvider === "custom"``. Lives here rather than in
+  // ``ModelConfigPanel`` so the entire custom-endpoint flow (URL +
+  // model id + API key + "Set as default") is in one place. The
+  // sidebar's "+ Custom endpoint" affordance is the canonical entry
+  // point; the Model Config panel no longer carries this form.
+  customDraftModel: string;
+  customDraftBaseUrl: string;
+  customSaving: boolean;
+  customError: string | null;
+  onCustomDraftModelChange: (v: string) => void;
+  onCustomDraftBaseUrlChange: (v: string) => void;
+  onSetCustomMain: () => Promise<void>;
 }
 
 function ProviderPanel({
   hProvider,
-  hModel,
-  hBaseUrl,
   hSaving,
   hSaved,
   hError,
-  credentialKeys,
+  credentialFields,
+  credentialAuthHint,
   keyDrafts,
   keysLoading,
   keysError,
@@ -1379,11 +1732,19 @@ function ProviderPanel({
   modelEntriesForProvider,
   providerCliMeta,
   providerOptionLabel,
-  onHModelChange,
-  onHBaseUrlChange,
   onKeyDraftChange,
   onSave,
+  onRefreshModels,
+  customDraftModel,
+  customDraftBaseUrl,
+  customSaving,
+  customError,
+  onCustomDraftModelChange,
+  onCustomDraftBaseUrlChange,
+  onSetCustomMain,
 }: ProviderPanelProps) {
+  const providerBlock = catalog?.providers?.[hProvider];
+  const defaultBaseUrl = providerBlock?.default_base_url?.trim() ?? "";
   return (
     <div className="space-y-4 p-6">
       {catalog?.warning && (
@@ -1401,8 +1762,8 @@ function ProviderPanel({
         if (merged.length === 0) return null;
         return (
           <p className="text-[11px] text-muted-foreground">
-            Recognized providers (declared in <span className="font-mono">config.yaml</span> or with a key set in the plugin{" "}
-            <span className="font-mono">.env</span>): {merged.join(", ")}
+            Recognized providers (declared in <span className="font-mono">~/.hermes/config.yaml</span> or with a key saved in{" "}
+            <span className="font-mono">~/.hermes/.env</span>): {merged.join(", ")}
           </p>
         );
       })()}
@@ -1410,90 +1771,142 @@ function ProviderPanel({
         <p className="text-[11px] text-amber-600 dark:text-amber-500">{hError}</p>
       )}
 
-      {/* Provider config section */}
+      {/* Provider credentials section. Writes ONLY to plugin .env —
+          setting the main model lives in the Model Config panel. */}
       <section className="space-y-5">
         <div>
-          <h3 className="text-sm font-medium text-foreground">Provider config</h3>
+          <h3 className="text-sm font-medium text-foreground">Credentials</h3>
           <div className="mt-2 space-y-1 text-sm text-muted-foreground">
             <p className="font-mono text-sm text-foreground">{hProvider}</p>
             <p className="text-xs">{providerOptionLabel(hProvider)}</p>
+            {defaultBaseUrl ? (
+              <p className="font-mono text-[10px] text-muted-foreground">
+                endpoint: {defaultBaseUrl}
+              </p>
+            ) : null}
           </div>
         </div>
         <div className="space-y-5">
-          {(hProvider === "auto" || hProvider === "custom") && (
-            <p className="text-xs text-muted-foreground">
-              {hProvider === "auto"
-                ? "Pick a specific provider to enter its key and see its full model list."
-                : "Set the API URL and key to use the custom endpoint."}
-            </p>
-          )}
-
-          {hProvider !== "auto" && credentialKeys.length > 0 && (
-            <div className="space-y-3">
-              <Label className="text-sm text-foreground">API keys</Label>
-              {keysError && (
-                <p className="text-[11px] text-amber-600 dark:text-amber-500">{keysError}</p>
+          {hProvider === "custom" && (
+            <div className="space-y-2 rounded-lg border border-border bg-muted/10 px-4 py-3">
+              <p className="text-[11px] text-muted-foreground">
+                Use any OpenAI-compatible endpoint as the main model. The API key (or any
+                env var the endpoint expects) goes in the Credentials section below.
+              </p>
+              <div className="space-y-1.5">
+                <Label htmlFor="custom-main-model" className="text-xs">Model name</Label>
+                <Input
+                  id="custom-main-model"
+                  value={customDraftModel}
+                  onChange={(e) => onCustomDraftModelChange(e.target.value)}
+                  placeholder="e.g. gpt-4o, llama-3.3-70b"
+                  className="font-mono text-xs"
+                  autoComplete="off"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="custom-main-url" className="text-xs">Endpoint URL</Label>
+                <Input
+                  id="custom-main-url"
+                  value={customDraftBaseUrl}
+                  onChange={(e) => onCustomDraftBaseUrlChange(e.target.value)}
+                  placeholder="https://your-endpoint/v1"
+                  className="font-mono text-xs"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </div>
+              {customError && (
+                <p className="text-[11px] text-amber-600 dark:text-amber-500">{customError}</p>
               )}
-              {keysLoading ? (
-                <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  Loading…
-                </p>
-              ) : (
-                <div className="space-y-3">
-                  {credentialKeys.map((name) => (
-                    <div key={name} className="space-y-1.5">
-                      <Label
-                        htmlFor={`key-${name}`}
-                        className="font-mono text-[11px] text-muted-foreground"
-                      >
-                        {name}
-                      </Label>
-                      <Input
-                        id={`key-${name}`}
-                        value={keyDrafts[name] ?? ""}
-                        onChange={(e) => onKeyDraftChange(name, e.target.value)}
-                        className="font-mono text-xs"
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div className="pt-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={customSaving || !customDraftModel.trim() || !customDraftBaseUrl.trim()}
+                  onClick={() => void onSetCustomMain()}
+                >
+                  {customSaving ? "Saving…" : "Set as default"}
+                </Button>
+              </div>
             </div>
           )}
 
-          <div className="space-y-1.5">
-            <Label htmlFor="h-baseurl-main">API URL (optional)</Label>
-            <Input
-              id="h-baseurl-main"
-              value={hBaseUrl}
-              onChange={(e) => onHBaseUrlChange(e.target.value)}
-              placeholder="OpenAI-compatible service base URL"
-              className="font-mono text-xs"
-              autoComplete="off"
-            />
-          </div>
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <Button type="button" disabled={hSaving} onClick={onSave}>
-              {hSaving ? "Saving…" : "Save settings"}
-            </Button>
-            {hSaved && (
-              <span className="text-xs text-[hsl(var(--success))]">Saved</span>
-            )}
-          </div>
+          {keysError && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-500">{keysError}</p>
+          )}
+
+          {keysLoading ? (
+            <p className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading credentials…
+            </p>
+          ) : credentialFields.length > 0 ? (
+            <>
+              <div className="space-y-3">
+                {credentialFields.map((field) => (
+                  <div key={field.key} className="space-y-1.5">
+                    <Label
+                      htmlFor={`key-${field.key}`}
+                      className="font-mono text-[11px] text-muted-foreground"
+                    >
+                      {field.key}
+                    </Label>
+                    <Input
+                      id={`key-${field.key}`}
+                      type={field.kind === "url" ? "url" : "text"}
+                      value={keyDrafts[field.key] ?? ""}
+                      placeholder={field.placeholder}
+                      onChange={(e) => onKeyDraftChange(field.key, e.target.value)}
+                      className="font-mono text-xs"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <Button type="button" disabled={hSaving} onClick={onSave}>
+                  {hSaving ? "Saving…" : "Save credentials"}
+                </Button>
+                {hSaved && (
+                  <span className="text-xs text-[hsl(var(--success))]">Saved</span>
+                )}
+              </div>
+            </>
+          ) : credentialAuthHint ? (
+            <p className="text-xs text-muted-foreground">{credentialAuthHint}</p>
+          ) : null}
         </div>
       </section>
 
       {/* Model list (display only) */}
-      {hProvider !== "auto" && (
+      {hProvider && (
         <section className="space-y-3 border-t border-border pt-8">
-          <div>
-            <h3 className="text-sm font-medium text-foreground">Models</h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Models available for the current provider. Use the “Model config” section to set a default or auxiliary model.
-            </p>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="text-sm font-medium text-foreground">Models</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Models available for the current provider. Use the “Model config” section to set a default or auxiliary model.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 shrink-0 gap-1.5 text-xs"
+              disabled={showHermesModelLoading}
+              onClick={onRefreshModels}
+              title="Refresh model list"
+            >
+              {showHermesModelLoading ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3 w-3" />
+              )}
+              Refresh
+            </Button>
           </div>
           <div className="space-y-3">
             {showHermesModelLoading ? (
@@ -1532,25 +1945,10 @@ function ProviderPanel({
                 ) : null}
               </>
             ) : (
-              <div className="space-y-3 rounded-lg border border-dashed border-border/80 bg-muted/15 p-4">
+              <div className="rounded-lg border border-dashed border-border/80 bg-muted/15 p-4">
                 <p className="text-xs text-muted-foreground">
-                  No models yet. After entering a key, click “Refresh catalog” at the top, or type a model name manually in “Model config”.
+                  No models yet. After entering a key here, click “Refresh catalog” at the top.
                 </p>
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                  <div className="min-w-0 flex-1 space-y-1.5">
-                    <Label htmlFor="h-model-fallback" className="text-xs">
-                      Model name
-                    </Label>
-                    <Input
-                      id="h-model-fallback"
-                      value={hModel}
-                      onChange={(e) => onHModelChange(e.target.value)}
-                      placeholder="e.g. gpt-4o"
-                      className="font-mono text-xs"
-                      autoComplete="off"
-                    />
-                  </div>
-                </div>
               </div>
             )}
           </div>

@@ -110,7 +110,7 @@ function appendApprovalToTimeline(
 }
 
 export async function startStream(payload: SubmitPayload): Promise<void> {
-  const { sessionId, assistantUiId, apiBase, apiKey, model, history } = payload;
+  const { sessionId, assistantUiId, model, history } = payload;
 
   if (controllers.has(sessionId)) {
     emit(sessionId, {
@@ -212,8 +212,6 @@ export async function startStream(payload: SubmitPayload): Promise<void> {
     await runHermesAgent(
       history,
       {
-        apiBase,
-        apiKey,
         model,
         sessionId,
         signal: ctrl.signal,

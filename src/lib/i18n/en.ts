@@ -44,6 +44,7 @@ export const en = {
   "options.nav.memory": "Memory",
   "options.nav.cron": "Cron",
   "options.nav.status": "Status",
+  "options.nav.logs": "Logs",
 
   // Preference page
   "options.preference.title": "Preference",
@@ -151,39 +152,24 @@ export const en = {
   "options.gateway.test.fail": "Could not reach the bridge: {error}",
   "options.gateway.startHint":
     "Bridge not running? Start it with `hermes-bridge` from the Hermes CLI.",
-  "options.gateway.intro.lead": "The side panel chat talks to",
-  "options.gateway.intro.gatewayName": "hermes-agent-gateway",
-  "options.gateway.intro.protocol": "(OpenAI-compatible HTTP).",
-  "options.gateway.intro.configureHint":
-    "Configure Hermes CLI models and keys in the",
-  "options.gateway.intro.modelsTab": "Models",
-  "options.gateway.intro.tab": "tab.",
-  "options.gateway.section.chat": "Side panel chat (gateway HTTP)",
-  "options.gateway.apiBase.label": "API base URL",
-  "options.gateway.apiBase.help":
-    "Only affects the side panel's direct gateway connection (default port 8642). Separate from the Hermes config on the Models tab.",
+  "options.gateway.section.chat": "Side panel chat",
   "options.gateway.model.label": "Chat model id",
   "options.gateway.model.fromGateway": "From gateway",
   "options.gateway.model.fromGateway.tooltip":
-    "GET /v1/models from the API base above",
+    "List models the gateway currently exposes",
   "options.gateway.model.noModels": "Gateway returned no models.",
-  "options.gateway.apiKey.label": "API key (optional)",
-  "options.gateway.apiKey.placeholder":
-    "leave empty if your gateway doesn't require auth",
-  "options.gateway.sessions.help.before": "Multiple sessions are managed in the side panel's",
-  "options.gateway.sessions.help.sessions": "Sessions",
-  "options.gateway.sessions.help.after":
-    "view; each request carries an",
-  "options.gateway.sessions.help.headerSuffix": "header.",
   "options.gateway.save": "Save",
   "options.gateway.saved": "Saved.",
+  "options.gateway.backplaneKey.title": "Backplane access",
+  "options.gateway.backplaneKey.label": "Access key (optional)",
+  "options.gateway.backplaneKey.placeholder":
+    "leave empty unless you've set HERMES_BACKPLANE_KEY",
+  "options.gateway.backplaneKey.help":
+    "Usually leave empty. If you want to require auth, set HERMES_BACKPLANE_KEY in ~/.hermes/.env, restart Hermes, then paste the same value here.",
   "options.gateway.bridge.title": "Bridge",
-  "options.gateway.bridge.fixed.before":
-    "The WebSocket bridge is fixed at",
-  "options.gateway.bridge.fixed.after":
-    ". To use a different port, set",
-  "options.gateway.bridge.fixed.suffix":
-    "on the Hermes side and rebuild the extension.",
+  "options.gateway.bridge.url.label": "Bridge URL",
+  "options.gateway.bridge.url.help":
+    "Leave as default. Only change this if you've moved the bridge to a different port on the Hermes side.",
 
   // Memory settings
   "options.memory.title": "Memory",
@@ -232,6 +218,32 @@ export const en = {
     "Hermes Agent scheduled jobs ({count} total)",
   "options.cron.refresh": "Refresh",
   "options.cron.newJob": "New job",
+
+  // Logs — tail of Hermes Agent log files
+  "options.logs.title": "Logs",
+  "options.logs.subtitle":
+    "Tail Hermes Agent log files (agent / errors / gateway)",
+  "options.logs.refresh": "Refresh",
+  "options.logs.autoRefresh": "Auto",
+  "options.logs.live": "live",
+  "options.logs.empty": "No matching log lines.",
+  "options.logs.failedToLoad": "Failed to load logs",
+  "options.logs.lineCount": "{count} lines",
+  "options.logs.file.label": "File",
+  "options.logs.file.agent": "agent",
+  "options.logs.file.errors": "errors",
+  "options.logs.file.gateway": "gateway",
+  "options.logs.level.label": "Level",
+  "options.logs.component.label": "Component",
+  "options.logs.component.all": "all",
+  "options.logs.component.gateway": "gateway",
+  "options.logs.component.agent": "agent",
+  "options.logs.component.tools": "tools",
+  "options.logs.component.cli": "cli",
+  "options.logs.component.cron": "cron",
+  "options.logs.lines.label": "Lines",
+  "options.logs.search.label": "Search",
+  "options.logs.search.placeholder": "Substring filter (case-insensitive)",
 
   // Sidepanel
   "sidepanel.newChat": "Start a new chat",
@@ -332,8 +344,6 @@ export const en = {
   "sidepanel.attachment.autoFrom.fallback": "current tab",
   "sidepanel.attachment.openInBrowser": "Open {name} in your browser",
   "sidepanel.attachment.remove": "Remove",
-  "sidepanel.cors.reinstall": "Re-install the Origin-stripping rule",
-  "sidepanel.cors.reset": "Reset CORS rule",
   "sidepanel.empty.title": "No conversation open",
   "sidepanel.empty.withHistory":
     "Start a new chat or pick one up from History.",

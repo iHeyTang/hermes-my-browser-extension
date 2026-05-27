@@ -7,7 +7,7 @@
  *   1. Size cap (matches Python `MAX_ATTACHMENT_BYTES`).
  *
  *   2. Upload the *full* bytes: side panel →
- *      `fetch(BACKPLANE_HTTP_BASE/hermes/attachments)` (raw POST body) to
+ *      `backplaneFetch("/hermes/attachments")` (raw POST body) to
  *      the backplane process — same on-disk layout as the Python
  *      `attachment.put` handler; there is no WebSocket / sendMessage
  *      upload path in the extension.
@@ -26,7 +26,7 @@
  * every type.
  */
 
-import { BACKPLANE_HTTP_BASE } from "~background/config";
+import { backplaneFetch } from "~lib/backplane-client";
 import { shortId } from "~lib/utils";
 
 import type {
@@ -419,11 +419,11 @@ async function uploadBlobViaAttachHttp(
     name,
     mime: ctype,
   });
-  const url = `${BACKPLANE_HTTP_BASE.replace(/\/$/, "")}/hermes/attachments?${q.toString()}`;
+  const url = `/hermes/attachments?${q.toString()}`;
   const ctrl = new AbortController();
   const tid = setTimeout(() => ctrl.abort(), PUT_MESSAGE_BUDGET_MS);
   try {
-    const res = await fetch(url, {
+    const res = await backplaneFetch(url, {
       method: "POST",
       body: blob,
       headers: { "Content-Type": ctype },

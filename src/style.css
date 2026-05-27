@@ -242,6 +242,32 @@ body,
   margin-top: 0.7rem;
 }
 
+/*
+ * `.chat-md--reasoning`: compact variant for the inline reasoning trace
+ * above an assistant bubble. The reasoning slot is metadata — it should
+ * read denser, lighter, and shorter than the actual answer so a reader
+ * who's not looking for it scans right past.
+ *
+ * Specificity note: ``.chat-md`` already pins ``font-size: 14px`` and
+ * ``color: hsl(var(--foreground))`` at (0,1,0), and is declared AFTER
+ * Tailwind utilities in the cascade, so inline ``text-[Xpx]`` /
+ * ``text-muted-foreground/N`` classes lose the tiebreaker and get
+ * silently overridden. Doubling the selector (``.chat-md--reasoning``
+ * + ``.chat-md``) lifts these rules to (0,2,0) so they reliably win.
+ */
+.chat-md--reasoning.chat-md {
+  font-size: 12px;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground) / 0.7);
+}
+.chat-md--reasoning.chat-md > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0.4rem;
+}
+.chat-md--reasoning.chat-md [data-streamdown="paragraph"] {
+  margin: 0;
+  line-height: 1.5;
+}
+
 /* Headings: smaller, tighter scale tuned for ~360px panels. */
 .chat-md.chat-md [data-streamdown="heading-1"],
 .chat-md.chat-md [data-streamdown="heading-2"],

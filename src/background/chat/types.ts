@@ -26,8 +26,6 @@ export interface SubmitPayload {
   sessionId: string;
   /** Stable uiId of the assistant placeholder bubble the panel just appended. */
   assistantUiId: string;
-  apiBase: string;
-  apiKey?: string;
   model: string;
   history: ChatMessage[];
 }

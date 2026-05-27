@@ -7,6 +7,7 @@
  * accumulated text once the stream completes (or `[DONE]` arrives).
  */
 
+import { backplaneFetch } from "~lib/backplane-client";
 import type { ChatMessage } from "~lib/types";
 
 /** Merged state for one streamed function tool call (OpenAI-style deltas). */
@@ -111,8 +112,6 @@ export interface ApprovalRecord {
 export const HERMES_APPROVAL_GATEWAY_TIMEOUT_MS = 300_000;
 
 export interface HermesClientOptions {
-  apiBase: string;
-  apiKey?: string;
   model: string;
   sessionId?: string;
   /** Forwarded to fetch as AbortSignal; lets the side panel cancel mid-stream. */
@@ -161,19 +160,15 @@ export async function streamChat(
   opts: HermesClientOptions,
   handlers: StreamHandlers = {},
 ): Promise<string> {
-  const url = `${stripTrailingSlash(opts.apiBase)}/chat/completions`;
+  const path = "/v1/chat/completions";
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "text/event-stream",
   };
-  if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
-  // The gateway rejects X-Hermes-Session-Id with 403 when no API key is
-  // configured server-side, so only opt in to session continuity when the
-  // caller has supplied an API key (matching the server's auth-required
-  // path).  Stateless chat still works without a key.
-  if (opts.sessionId && opts.apiKey) {
-    headers["X-Hermes-Session-Id"] = opts.sessionId;
-  }
+  // Always set the session header when sessionId is supplied — the
+  // backplane proxy strips it before forwarding when the gateway
+  // isn't running with API_SERVER_KEY (would otherwise 403).
+  if (opts.sessionId) headers["X-Hermes-Session-Id"] = opts.sessionId;
 
   const body = JSON.stringify({
     model: opts.model,
@@ -185,7 +180,7 @@ export async function streamChat(
     })),
   });
 
-  const res = await fetch(url, {
+  const res = await backplaneFetch(path, {
     method: "POST",
     headers,
     body,
@@ -193,7 +188,7 @@ export async function streamChat(
   });
   if (!res.ok) {
     const text = await safeText(res);
-    throw new HermesHttpError(res.status, text || res.statusText, url);
+    throw new HermesHttpError(res.status, text || res.statusText, path);
   }
   const sessionHeader =
     res.headers.get("X-Hermes-Session-Id") ||
@@ -432,9 +427,6 @@ async function safeText(res: Response): Promise<string> {
   }
 }
 
-function stripTrailingSlash(s: string): string {
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
 
 /**
  * POST a decision to `/v1/runs/{runId}/approval`. Both the panel (after
@@ -443,26 +435,23 @@ function stripTrailingSlash(s: string): string {
  * settings/config shape.
  */
 export async function postHermesApprovalDecision(opts: {
-  apiBase: string;
-  apiKey?: string;
   runId: string;
   approvalId: string;
   decision: HermesApprovalDecision;
 }): Promise<{ ok: boolean; status?: number; error?: string }> {
   if (!opts.runId) return { ok: false, error: "missing run id" };
   if (!opts.approvalId) return { ok: false, error: "missing approval id" };
-  const url = `${stripTrailingSlash(opts.apiBase)}/runs/${encodeURIComponent(opts.runId)}/approval`;
+  const path = `/v1/runs/${encodeURIComponent(opts.runId)}/approval`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
   };
-  if (opts.apiKey) headers.Authorization = `Bearer ${opts.apiKey}`;
   try {
     // The gateway expects `{choice: "once|session|always|deny"}`. We retain
     // `approval_id` in the JSON only as a forward-compat hint — the v0.13
     // gateway ignores it; older/forked builds that did consume an id will
     // still find what they expect.
-    const res = await fetch(url, {
+    const res = await backplaneFetch(path, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -547,8 +536,6 @@ export interface RunHandlers {
 }
 
 export interface RunAgentOptions {
-  apiBase: string;
-  apiKey?: string;
   /** Long-term session-key for memory scoping (`X-Hermes-Session-Key` header). */
   sessionKey?: string;
   /** Hermes session id for short-term chat continuity. */
@@ -589,19 +576,15 @@ export async function runHermesAgent(
   opts: RunAgentOptions,
   handlers: RunHandlers = {},
 ): Promise<void> {
-  const base = stripTrailingSlash(opts.apiBase);
-
   // Phase 1: kick off the run.
   const startHeaders: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
   };
-  if (opts.apiKey) startHeaders.Authorization = `Bearer ${opts.apiKey}`;
-  // Long-term memory key (only when API key is set — the gateway rejects
-  // session headers without auth, see chat_completions for the same gate).
-  if (opts.sessionKey && opts.apiKey) {
-    startHeaders["X-Hermes-Session-Key"] = opts.sessionKey;
-  }
+  // Always set the session-key header when supplied — the backplane
+  // proxy strips it before forwarding when the gateway isn't running
+  // with API_SERVER_KEY (would otherwise 403).
+  if (opts.sessionKey) startHeaders["X-Hermes-Session-Key"] = opts.sessionKey;
 
   // Hermes splits a list `input` so the last entry is the user message and
   // the earlier ones become conversation history. That matches our internal
@@ -617,7 +600,7 @@ export async function runHermesAgent(
   if (opts.model) startBody.model = opts.model;
   if (opts.sessionId) startBody.session_id = opts.sessionId;
 
-  const startRes = await fetch(`${base}/runs`, {
+  const startRes = await backplaneFetch("/v1/runs", {
     method: "POST",
     headers: startHeaders,
     body: JSON.stringify(startBody),
@@ -631,7 +614,7 @@ export async function runHermesAgent(
     throw new HermesHttpError(
       startRes.status,
       text || startRes.statusText,
-      `${base}/runs`,
+      "/v1/runs",
     );
   }
   const startJson = (await startRes.json()) as { run_id?: string };
@@ -645,11 +628,8 @@ export async function runHermesAgent(
   const ctrl = opts.signal ? null : new AbortController();
   const sig = opts.signal ?? ctrl!.signal;
   const stopOnAbort = () => {
-    void fetch(`${base}/runs/${encodeURIComponent(runId)}/stop`, {
+    void backplaneFetch(`/v1/runs/${encodeURIComponent(runId)}/stop`, {
       method: "POST",
-      headers: opts.apiKey
-        ? { Authorization: `Bearer ${opts.apiKey}` }
-        : undefined,
       // Don't await; this is best-effort cleanup.
       keepalive: true,
     }).catch(() => {});
@@ -662,10 +642,9 @@ export async function runHermesAgent(
   const eventsHeaders: Record<string, string> = {
     Accept: "text/event-stream",
   };
-  if (opts.apiKey) eventsHeaders.Authorization = `Bearer ${opts.apiKey}`;
 
-  const eventsRes = await fetch(
-    `${base}/runs/${encodeURIComponent(runId)}/events`,
+  const eventsRes = await backplaneFetch(
+    `/v1/runs/${encodeURIComponent(runId)}/events`,
     {
       method: "GET",
       headers: eventsHeaders,
@@ -677,7 +656,7 @@ export async function runHermesAgent(
     throw new HermesHttpError(
       eventsRes.status,
       text || eventsRes.statusText,
-      `${base}/runs/${runId}/events`,
+      `/v1/runs/${runId}/events`,
     );
   }
   if (!eventsRes.body) {
